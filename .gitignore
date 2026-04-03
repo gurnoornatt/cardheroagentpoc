@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+.pytest_cache/
+
+# Environment — never commit secrets
+.env
+.env.local
+newpoc/.env
+
+# SQLite databases
+*.db
+*.sqlite
+newpoc/backend/db/
+
+# Node
+node_modules/
+newpoc/agent/dist/
+newpoc/lab/dist/
+
+# Agent receipts (screenshots + DOM snapshots)
+receipts/
+newpoc/receipts/
+
+# macOS
+.DS_Store

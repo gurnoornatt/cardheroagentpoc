@@ -1,0 +1,128 @@
+Project Specification: CardHero "Last-Mile" Engine (PoC)
+
+1. Vision & Strategy
+
+Build a professional-grade "Steel Thread" for CardHero. The system identifies a Pokémon card deal, verifies it against a "Want List," and executes a secure "Last Mile" check on eBay using Browserbase.
+
+Core Principles
+
+The Conductor (Backend): Logic is 100% deterministic. No AI makes financial decisions. It manages the State Machine.
+
+The Agent (Worker): The agent is stateless, narrowly scoped, and triggered only for tasks without an API. It acts as a "clerk."
+
+Security: Zero-trust architecture. No PII or credentials ever reach the LLM context. Use scoped session signers and variable masking.
+
+2. Technical Architecture
+
+A. The Conductor (Python/FastAPI)
+
+The "Brain" of the operation. It manages state and enforces budget guardrails.
+
+Database: SQLite (backend/db/cardhero.db).
+
+Tables:
+
+WantList: id, name, grade, max_price, cert_prefix, target_id.
+
+Portfolio: id, name, grade, purchase_price, current_value, cert_number.
+
+Deals: id, url, landed_cost, status (PENDING, ANALYZING, BOUGHT, REJECTED), watchman_score.
+
+AuditLog: id, deal_id, agent_extraction_json, screenshot_path.
+
+B. The Watchman (Python/Polling)
+
+A deterministic "Waterfall Filter" that prevents "slop" from reaching the agent.
+
+Step 1: The Scraper: Polls eBay FixedPrice listings for WantList items.
+
+Step 2: Title Sanitization: Discards listings containing "Proxy," "Reprint," "Digital," "READ," or "Custom."
+
+Step 3: The Math Gate: Calculates Landed Cost (Price + Shipping + Estimated Tax). Discards if LandedCost > MaxPrice.
+
+Step 4: The Seller Gate: Discards if Seller Rating < 98% or Feedback Count < 100.
+
+Step 5: The Hand-off: POSTs valid candidates to the Conductor's /evaluate endpoint.
+
+C. The Last Mile Agent (Node.js/Stagehand)
+
+The "Hands." It performs the physical verification that APIs cannot.
+
+Infrastructure: Browserbase (Cloud-isolated browser).
+
+Process Flow:
+
+Navigate: Go to the specific eBay URL provided by the Conductor.
+
+Extract: Use page.extract() to find the PSA cert number and verify the "Buy It Now" price matches the Watchman's data.
+
+Verify: Compare extracted Cert vs. DB expectation. If mismatch → ABORT.
+
+Act: Use page.act() with Stagehand %variables% to handle login and navigate to the final "Confirm" page.
+
+Audit: Save a DOM snapshot and a screenshot of the final page before closing.
+
+3. Files & Directory Structure
+
+/cardhero-poc
+├── backend/
+│   ├── main.py            # FastAPI State Machine & API
+│   ├── monitor.py         # The Watchman (Waterfall Filter)
+│   ├── database.py        # SQLAlchemy/SQLite setup
+│   └── seeds/             # history.json, want_list.json
+├── agent/
+│   ├── checkout.ts        # Stagehand + Browserbase Script
+│   ├── package.json
+│   └── tsconfig.json
+├── receipts/              # Local storage for agent screenshots
+├── .env                   # BROWSERBASE_API_KEY, EBAY_PASSWORD, etc.
+└── PROJECT_spec.md        # This file
+
+
+4. Security & Guardrails
+
+Feature
+
+Implementation
+
+Budget Circuit Breaker
+
+The Conductor enforces a daily_spend_limit. The Agent has no authority to override it.
+
+Credential Masking
+
+Stagehand %password% syntax is used. The LLM never sees the actual string.
+
+Price Lock
+
+The Agent is passed a max_allowed_price. If the checkout page shows a higher amount, the Agent kills the session.
+
+Isolation
+
+Every Browserbase session is ephemeral. No cookies or history persist after the task is finished.
+
+5. Phase-by-Phase Build Plan
+
+Phase 1: The Deterministic Core
+
+Initialize FastAPI and SQLite with the schema above.
+
+Seed the DB with a "Want List" target: Charizard ex (PSA 10) with a $400 limit.
+
+Implement the /evaluate logic that returns a "GO/NO-GO" signal.
+
+Phase 2: The Watchman Pipeline
+
+Build the Python scraper for eBay FixedPrice listings.
+
+Implement the "Landed Cost" math and keyword filter.
+
+Connect the Watchman to the Conductor so it populates the Deals table.
+
+Phase 3: The Last Mile Agent
+
+Setup the Node.js project with Stagehand.
+
+Implement the extract → verify → act flow.
+
+Ensure screenshots are saved to the receipts/ folder for human auditing.

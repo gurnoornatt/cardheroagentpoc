@@ -1,0 +1,65 @@
+[
+  {
+    "name": "Charizard ex",
+    "grade": "PSA 10",
+    "max_price": 380.00,
+    "cert_prefix": "POKE",
+    "target_id": "charizard-ex-obsidian-flames-215",
+    "set_name": "Obsidian Flames",
+    "year": 2023
+  },
+  {
+    "name": "Pikachu VMAX Rainbow Rare",
+    "grade": "PSA 10",
+    "max_price": 120.00,
+    "cert_prefix": "POKE",
+    "target_id": "pikachu-vmax-vivid-voltage-188",
+    "set_name": "Vivid Voltage",
+    "year": 2020
+  },
+  {
+    "name": "Umbreon VMAX Alt Art",
+    "grade": "PSA 10",
+    "max_price": 450.00,
+    "cert_prefix": "POKE",
+    "target_id": "umbreon-vmax-alt-art-evolving-skies-215",
+    "set_name": "Evolving Skies",
+    "year": 2021
+  },
+  {
+    "name": "Charizard VSTAR",
+    "grade": "PSA 10",
+    "max_price": 90.00,
+    "cert_prefix": "POKE",
+    "target_id": "charizard-vstar-brilliant-stars-174",
+    "set_name": "Brilliant Stars",
+    "year": 2022
+  },
+  {
+    "name": "Lugia V Alt Art",
+    "grade": "PSA 10",
+    "max_price": 200.00,
+    "cert_prefix": "POKE",
+    "target_id": "lugia-v-alt-art-silver-tempest-186",
+    "set_name": "Silver Tempest",
+    "year": 2022
+  },
+  {
+    "name": "Rayquaza VMAX Alt Art",
+    "grade": "PSA 10",
+    "max_price": 350.00,
+    "cert_prefix": "POKE",
+    "target_id": "rayquaza-vmax-alt-art-evolving-skies-218",
+    "set_name": "Evolving Skies",
+    "year": 2021
+  },
+  {
+    "name": "Blastoise ex",
+    "grade": "PSA 9",
+    "max_price": 45.00,
+    "cert_prefix": "POKE",
+    "target_id": "blastoise-ex-paldea-evolved-230",
+    "set_name": "Paldea Evolved",
+    "year": 2023
+  }
+]
