@@ -167,7 +167,7 @@ def _seed_deals(db, wl_map: dict[str, WantList]) -> dict[int, Deal]:
         # 0: BOUGHT BIN — Charizard ex (undervalue delta ~104, passes gate)
         dict(
             want_list=wl_map["Charizard ex"],
-            url="https://www.ebay.com/itm/100000000001",
+            url="https://www.ebay.com/itm/389796116335",
             listing_type="BUY_IT_NOW",
             price=190.00, shipping=0.0,
             status="BOUGHT",
@@ -188,10 +188,10 @@ def _seed_deals(db, wl_map: dict[str, WantList]) -> dict[int, Deal]:
             undervalue_delta=106.55,
             seller_username="card_vault_99", seller_rating=99.5, seller_feedback_count=876,
         ),
-        # 2: REJECTED — over max_price (Umbreon)
+        # 2: REJECTED — over max_price (Umbreon / Moonbreon — listing at $1820 exceeds $1800 max)
         dict(
             want_list=wl_map["Umbreon VMAX Alt Art"],
-            url="https://www.ebay.com/itm/100000000003",
+            url="https://www.ebay.com/itm/206185718638",
             listing_type="BUY_IT_NOW",
             price=1820.00, shipping=0.0,
             status="REJECTED",
@@ -321,15 +321,15 @@ def _seed_audit_logs(db, deal_map: dict[int, Deal]) -> None:
             agent_extraction_json=json.dumps({
                 "cert_number": "POKE-48291033",
                 "price": 190.0,
-                "psa_pop_grade10": 42,
-                "psa_pop_total": 351,
+                "psa_pop_grade10": 156,
+                "psa_pop_total": 1243,
                 "authenticity_guaranteed": True,
-                "title": "2023 Pokemon Charizard ex PSA 10 Obsidian Flames",
+                "title": "2023 Pokemon Obsidian Flames Charizard ex #223 PSA 10",
                 "seller_username": "top_card_shop",
                 "condition": "Graded",
             }),
-            psa_pop_grade10=42,
-            psa_pop_total=351,
+            psa_pop_grade10=156,
+            psa_pop_total=1243,
             screenshot_path="receipts/deal_1_2024-03-27T09-15-00.png",
             dom_snapshot_path="receipts/deal_1_2024-03-27T09-15-00_dom.html",
             verified_cert="POKE-48291033",
@@ -377,51 +377,51 @@ def _seed_audit_logs(db, deal_map: dict[int, Deal]) -> None:
 
 def _seed_lab_runs(db, deal_map: dict[int, Deal]) -> None:
     runs = [
-        # Deal 0 (Charizard ex, BOUGHT) — 3 models
-        dict(deal=deal_map[0], model="google/gemini-2.5-flash",
+        # Deal 0 (Charizard ex, BOUGHT) — 3 OpenRouter models
+        dict(deal=deal_map[0], model="google/gemini-3-flash-preview",
              extracted_cert="POKE-48291033", extracted_price=190.0,
-             extracted_pop_grade10=42, extracted_pop_total=351,
+             extracted_pop_grade10=156, extracted_pop_total=1243,
              ground_truth_cert="POKE-48291033", cert_correct=True, price_correct=True,
-             latency_ms=2100),
-        dict(deal=deal_map[0], model="claude-sonnet-4-6",
+             latency_ms=1840),
+        dict(deal=deal_map[0], model="anthropic/claude-sonnet-4-5",
              extracted_cert="POKE-48291033", extracted_price=190.0,
-             extracted_pop_grade10=42, extracted_pop_total=351,
+             extracted_pop_grade10=156, extracted_pop_total=1243,
              ground_truth_cert="POKE-48291033", cert_correct=True, price_correct=True,
-             latency_ms=4200),
-        dict(deal=deal_map[0], model="gpt-4o",
-             extracted_cert="48291033",  # wrong format (missing prefix)
+             latency_ms=3620),
+        dict(deal=deal_map[0], model="openai/gpt-5-nano",
+             extracted_cert="48291033",  # missing POKE- prefix
              extracted_price=190.0,
-             extracted_pop_grade10=42, extracted_pop_total=351,
+             extracted_pop_grade10=156, extracted_pop_total=1243,
              ground_truth_cert="POKE-48291033", cert_correct=False, price_correct=True,
-             latency_ms=3800),
+             latency_ms=2950),
         # Deal 1 (Pikachu VMAX, BOUGHT) — 2 models
-        dict(deal=deal_map[1], model="google/gemini-2.5-flash",
+        dict(deal=deal_map[1], model="google/gemini-3-flash-preview",
              extracted_cert="POKE-55671829", extracted_price=50.0,
              extracted_pop_grade10=89, extracted_pop_total=620,
              ground_truth_cert="POKE-55671829", cert_correct=True, price_correct=True,
-             latency_ms=1950),
-        dict(deal=deal_map[1], model="claude-sonnet-4-6",
+             latency_ms=1720),
+        dict(deal=deal_map[1], model="anthropic/claude-sonnet-4-5",
              extracted_cert="POKE-55671829", extracted_price=52.0,  # off by $2
              extracted_pop_grade10=89, extracted_pop_total=620,
              ground_truth_cert="POKE-55671829", cert_correct=True, price_correct=False,
-             latency_ms=3900),
+             latency_ms=3480),
         # Deal 5 (Charizard VSTAR, ANALYZING) — 3 models
-        dict(deal=deal_map[5], model="google/gemini-2.5-flash",
+        dict(deal=deal_map[5], model="google/gemini-3-flash-preview",
              extracted_cert="POKE-77123456", extracted_price=95.0,
              extracted_pop_grade10=15, extracted_pop_total=210,
              ground_truth_cert="POKE-77123456", cert_correct=True, price_correct=True,
-             latency_ms=2300),
-        dict(deal=deal_map[5], model="gpt-4o",
+             latency_ms=1980),
+        dict(deal=deal_map[5], model="openai/gpt-5-nano",
              extracted_cert="POKE-77123456", extracted_price=95.0,
              extracted_pop_grade10=15, extracted_pop_total=210,
              ground_truth_cert="POKE-77123456", cert_correct=True, price_correct=True,
-             latency_ms=5100),
-        dict(deal=deal_map[5], model="claude-sonnet-4-6",
+             latency_ms=2640),
+        dict(deal=deal_map[5], model="anthropic/claude-sonnet-4-5",
              extracted_cert=None,  # ground_truth not yet verified
              extracted_price=95.0,
              extracted_pop_grade10=15, extracted_pop_total=210,
              ground_truth_cert=None, cert_correct=None, price_correct=True,
-             latency_ms=4100),
+             latency_ms=3810),
     ]
 
     for entry in runs:

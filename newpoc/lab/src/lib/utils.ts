@@ -51,6 +51,11 @@ export const STATUS_COLORS: Record<string, string> = {
 };
 
 export const MODEL_COLORS: Record<string, string> = {
+  // OpenRouter models (current)
+  "google/gemini-3-flash-preview": "#4285F4",
+  "openai/gpt-5-nano": "#10B981",
+  "anthropic/claude-sonnet-4-5": "#D97706",
+  // Legacy (seed backward compat)
   "google/gemini-2.5-flash": "#4285F4",
   "claude-sonnet-4-6": "#D97706",
   "gpt-4o": "#10B981",

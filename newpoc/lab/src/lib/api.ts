@@ -119,4 +119,12 @@ export const api = {
     http.patch(`/deals/${id}/status`, { status }).then((r) => r.data),
   labRuns: () => http.get<LabRun[]>("/lab/runs").then((r) => r.data),
   labMetrics: () => http.get<LabMetrics>("/lab/metrics").then((r) => r.data),
+  runExtraction: (deal_id: number, model: string, ground_truth_cert?: string) =>
+    http
+      .post<LabRun>("/lab/extract", { deal_id, model, ground_truth_cert })
+      .then((r) => r.data),
+  runPipeline: (url: string, max_price: number) =>
+    http
+      .post<{ deal_id: number; status: string }>("/pipeline/run", { url, max_price, dry_run: true })
+      .then((r) => r.data),
 };

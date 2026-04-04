@@ -13,11 +13,15 @@ Port: 8001  (avoids collision with v1 on 8000)
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+import subprocess
+
+import httpx
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -35,6 +39,7 @@ from newpoc.backend.database import (
     LabRun,
     Portfolio,
     PriceHistory,
+    SessionLocal,
     WantList,
     get_db,
     init_db,
@@ -119,6 +124,13 @@ class AgentResult(BaseModel):
     rejection_reason: Optional[str] = None
     model_used: Optional[str] = None
     extraction_latency_ms: Optional[int] = None
+    listing_page_text: Optional[str] = None   # raw page text for A/B model comparison
+
+
+class PipelineRunRequest(BaseModel):
+    url: str
+    max_price: float
+    dry_run: bool = True          # stops before clicking "Confirm and pay"
 
 
 class StatusUpdate(BaseModel):
@@ -134,6 +146,13 @@ class LabRunCreate(BaseModel):
     extracted_pop_total: Optional[int] = None
     ground_truth_cert: Optional[str] = None
     latency_ms: Optional[int] = None
+
+
+class LabExtractRequest(BaseModel):
+    deal_id: int
+    model: str                          # OpenRouter model ID e.g. "google/gemini-3-flash-preview"
+    ground_truth_cert: Optional[str] = None
+    listing_text: Optional[str] = None  # if provided, skip scraping and use this directly
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,7 +565,11 @@ def ingest_price_history(payload: PriceHistoryIngest, db: Session = Depends(get_
 
 
 @app.post("/agent/result")
-def agent_result(result: AgentResult, db: Session = Depends(get_db)):
+def agent_result(
+    result: AgentResult,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     deal = db.query(Deal).filter(Deal.id == result.deal_id).first()
     if not deal:
         raise HTTPException(status_code=404, detail=f"Deal {result.deal_id} not found")
@@ -554,13 +577,28 @@ def agent_result(result: AgentResult, db: Session = Depends(get_db)):
     deal.status = result.final_status.upper()
     deal.updated_at = datetime.now(timezone.utc)
 
+    # Update deal price if agent found the actual price (ad-hoc runs start at 0)
+    if result.price_locked and result.price_locked > 0 and deal.price == 0:
+        deal.price = result.price_locked
+        deal.tax_estimate = round(result.price_locked * TAX_RATE, 2)
+        deal.landed_cost = round(result.price_locked * (1 + TAX_RATE), 2)
+
+    # Build extraction JSON — embed rejection_reason for frontend display
+    extraction_data: dict = {}
+    try:
+        extraction_data = json.loads(result.agent_extraction_json)
+    except Exception:
+        extraction_data = {"raw": result.agent_extraction_json}
+    if result.rejection_reason:
+        extraction_data["_rejection_reason"] = result.rejection_reason
+
     # Create or update audit log
     audit = db.query(AuditLog).filter(AuditLog.deal_id == result.deal_id).first()
     if audit is None:
         audit = AuditLog(deal_id=result.deal_id)
         db.add(audit)
 
-    audit.agent_extraction_json = result.agent_extraction_json
+    audit.agent_extraction_json = json.dumps(extraction_data)
     audit.psa_pop_grade10 = result.psa_pop_grade10
     audit.psa_pop_total = result.psa_pop_total
     audit.screenshot_path = result.screenshot_path
@@ -573,6 +611,17 @@ def agent_result(result: AgentResult, db: Session = Depends(get_db)):
     audit.extraction_latency_ms = result.extraction_latency_ms
 
     db.commit()
+
+    # A/B comparison — run both OpenRouter models on the same page text in background
+    if result.listing_page_text:
+        ground_truth = result.verified_cert if result.verified_cert != "NOT_FOUND" else None
+        background_tasks.add_task(
+            _run_ab_comparison,
+            deal_id=result.deal_id,
+            listing_text=result.listing_page_text,
+            ground_truth_cert=ground_truth,
+            deal_price=result.price_locked or 0.0,
+        )
 
     logger.info(
         f"[agent/result] deal_id={result.deal_id} → {result.final_status} "
@@ -666,6 +715,237 @@ def lab_metrics(db: Session = Depends(get_db)):
             "avg_latency_ms": round(sum(lats) / len(lats)) if lats else None,
         }
     return result
+
+
+AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../agent"))
+AB_MODELS = ["google/gemini-3-flash-preview", "openai/gpt-5-nano"]
+
+
+def _extraction_prompt(listing_text: str) -> str:
+    return (
+        "Extract data from this eBay Pokemon card listing. "
+        "Return ONLY JSON, no markdown, no extra text.\n\n"
+        f"Listing text:\n{listing_text[:3500]}\n\n"
+        'JSON: {"cert_number": "PSA cert as shown (e.g. POKE-12345678) or NOT_FOUND", '
+        '"price": 0.0, "psa_pop_grade10": 0, "psa_pop_total": 0, "authenticity_guaranteed": false}'
+    )
+
+
+async def _call_openrouter(model: str, prompt: str) -> dict:
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY not set")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": "https://cardhero.app",
+                "X-Title": "CardHero Lab",
+            },
+            json={"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0},
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        return json.loads(content)
+
+
+async def _run_ab_comparison(
+    deal_id: int, listing_text: str, ground_truth_cert: Optional[str], deal_price: float
+) -> None:
+    """Run Gemini 3 Flash + GPT-5 Nano via OpenRouter in background, save lab_runs."""
+    for model in AB_MODELS:
+        start = datetime.now(timezone.utc)
+        try:
+            extracted = await _call_openrouter(model, _extraction_prompt(listing_text))
+            latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+
+            ec = extracted.get("cert_number") or None
+            ep = extracted.get("price")
+
+            cert_correct = None
+            if ground_truth_cert and ec and ec != "NOT_FOUND":
+                cert_correct = ec == ground_truth_cert
+
+            price_correct = None
+            if ep and float(ep) > 0 and deal_price > 0:
+                price_correct = abs(float(ep) - deal_price) <= 1.00
+
+            db = SessionLocal()
+            try:
+                run = LabRun(
+                    deal_id=deal_id, model=model,
+                    extracted_cert=str(ec) if ec else None,
+                    extracted_price=float(ep) if ep else None,
+                    extracted_pop_grade10=int(extracted.get("psa_pop_grade10") or 0) or None,
+                    extracted_pop_total=int(extracted.get("psa_pop_total") or 0) or None,
+                    ground_truth_cert=ground_truth_cert,
+                    cert_correct=cert_correct, price_correct=price_correct,
+                    latency_ms=latency_ms,
+                )
+                db.add(run)
+                db.commit()
+                logger.info(f"[a/b] deal_id={deal_id} model={model} cert={ec} latency={latency_ms}ms")
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.error(f"[a/b] {model} deal_id={deal_id} failed: {exc}")
+
+
+def _validate_pipeline_request(payload: PipelineRunRequest, request: Request) -> None:
+    """Validate URL is an eBay listing, and check optional API key if configured."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(payload.url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="URL must use http or https")
+    hostname = parsed.netloc.lower().lstrip("www.")
+    if hostname not in ("ebay.com", "ebay.co.uk", "ebay.ca", "ebay.com.au"):
+        raise HTTPException(status_code=400, detail="URL must be from ebay.com")
+    if "/itm/" not in payload.url:
+        raise HTTPException(status_code=400, detail="URL must be a valid eBay listing (/itm/)")
+    if payload.max_price <= 0 or payload.max_price > 10_000:
+        raise HTTPException(status_code=400, detail="max_price must be between 0 and 10,000")
+
+    # Optional API key guard — set PIPELINE_API_KEY env var to enable.
+    # If not set, anyone can call the endpoint (fine for local dev / private deploy).
+    required_key = os.getenv("PIPELINE_API_KEY", "")
+    if required_key:
+        provided = request.headers.get("X-API-Key", "")
+        if provided != required_key:
+            raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+
+
+@app.post("/pipeline/run", status_code=201)
+def run_pipeline(payload: PipelineRunRequest, request: Request, db: Session = Depends(get_db)):
+    """
+    Create a deal and spawn the checkout agent as a background process.
+    Returns deal_id immediately — poll GET /deals/{id} for status.
+    """
+    _validate_pipeline_request(payload, request)
+
+    wl = db.query(WantList).filter(WantList.is_active == True).first()
+    if not wl:
+        raise HTTPException(status_code=400, detail="No active want list items in DB")
+
+    clean_url = payload.url.split("?")[0]
+    ebay_item_id = clean_url.split("/itm/")[-1] if "/itm/" in clean_url else ""
+
+    deal = Deal(
+        want_list_id=wl.id,
+        url=clean_url,
+        listing_type="BUY_IT_NOW",
+        price=0.0, shipping=0.0, tax_estimate=0.0, landed_cost=0.0,
+        status="ANALYZING",
+        watchman_score=0.0,
+        ebay_item_id=ebay_item_id,
+    )
+    db.add(deal)
+    db.commit()
+    db.refresh(deal)
+
+    agent_input = json.dumps({
+        "deal_id": deal.id,
+        "url": payload.url,
+        "max_allowed_price": payload.max_price,
+        "expected_cert_prefix": "",
+        "dry_run": payload.dry_run,
+    })
+
+    subprocess.Popen(
+        ["npx", "ts-node", "checkout.ts", agent_input],
+        cwd=AGENT_DIR,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    logger.info(f"[pipeline/run] deal_id={deal.id} url={clean_url} max_price={payload.max_price}")
+    return {"deal_id": deal.id, "status": "ANALYZING"}
+
+
+@app.post("/lab/extract", status_code=201)
+async def run_lab_extraction(payload: LabExtractRequest, db: Session = Depends(get_db)):
+    """
+    Fetch an eBay listing, send it to an OpenRouter model, save the extraction as a lab_run.
+    Supports any OpenRouter model ID: google/gemini-3-flash-preview, openai/gpt-5-nano, etc.
+    """
+    deal = db.query(Deal).filter(Deal.id == payload.deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    start_ts = datetime.now(timezone.utc)
+
+    # 1. Require caller-supplied listing text (backend cannot scrape eBay — bot detection)
+    if not payload.listing_text:
+        raise HTTPException(
+            status_code=400,
+            detail="listing_text is required — run the agent first to capture page text"
+        )
+    listing_text = payload.listing_text
+
+    # 2. Build structured extraction prompt
+    prompt = (
+        "You are extracting data from an eBay listing for a PSA-graded Pokemon card.\n\n"
+        f"Listing content:\n{listing_text}\n\n"
+        "Return ONLY this JSON structure — no other text:\n"
+        '{"cert_number": "PSA cert number as shown, or NOT_FOUND", '
+        '"price": 0.0, '
+        '"psa_pop_grade10": 0, '
+        '"psa_pop_total": 0, '
+        '"authenticity_guaranteed": false}'
+    )
+
+    # 3. Call OpenRouter
+    try:
+        extracted = await _call_openrouter(payload.model, prompt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"OpenRouter error: {exc}")
+
+    latency_ms = int((datetime.now(timezone.utc) - start_ts).total_seconds() * 1000)
+
+    # 4. Auto-compute correctness
+    extracted_cert = extracted.get("cert_number") or None
+    extracted_price = extracted.get("price")
+
+    cert_correct = None
+    if payload.ground_truth_cert and extracted_cert and extracted_cert != "NOT_FOUND":
+        cert_correct = extracted_cert == payload.ground_truth_cert
+
+    price_correct = None
+    if extracted_price is not None and float(extracted_price) > 0:
+        price_correct = abs(float(extracted_price) - deal.price) <= 1.00
+
+    pop10 = extracted.get("psa_pop_grade10")
+    pop_total = extracted.get("psa_pop_total")
+
+    run = LabRun(
+        deal_id=payload.deal_id,
+        model=payload.model,
+        extracted_cert=str(extracted_cert) if extracted_cert else None,
+        extracted_price=float(extracted_price) if extracted_price else None,
+        extracted_pop_grade10=int(pop10) if pop10 else None,
+        extracted_pop_total=int(pop_total) if pop_total else None,
+        ground_truth_cert=payload.ground_truth_cert,
+        cert_correct=cert_correct,
+        price_correct=price_correct,
+        latency_ms=latency_ms,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    logger.info(
+        f"[lab/extract] deal_id={payload.deal_id} model={payload.model} "
+        f"cert={extracted_cert} price={extracted_price} latency={latency_ms}ms"
+    )
+    return _lab_run_to_dict(run)
 
 
 def _lab_run_to_dict(r: LabRun) -> dict:

@@ -10,8 +10,9 @@ wheels/
 
 # Environment — never commit secrets
 .env
-.env.local
-newpoc/.env
+.env.*
+!.env.example
+!.env.*.example
 
 # SQLite databases
 *.db
@@ -29,3 +30,6 @@ newpoc/receipts/
 
 # macOS
 .DS_Store
+
+# Misc artifacts
+checkout

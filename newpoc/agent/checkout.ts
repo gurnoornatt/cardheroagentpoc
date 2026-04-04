@@ -55,6 +55,7 @@ interface AgentResult {
   rejection_reason: string | null;
   model_used: string;
   extraction_latency_ms: number | null;
+  listing_page_text?: string; // raw page text for A/B model comparison
 }
 
 // ---------------------------------------------------------------------------
@@ -135,14 +136,21 @@ function makeTimestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
 
-function buildProxyUrl(): string | null {
+function buildProxyConfig(): { server: string; username: string; password: string } | null {
   const base = process.env.RESIDENTIAL_PROXY_URL;
   if (!base) return null;
-  // Inject a per-run sticky session ID so the IP is held throughout one
-  // checkout flow but rotates between separate runs.
-  // http://user:pass@host:port → http://user-session-RANDOM:pass@host:port
+  // Parse http://user:pass@host:port into separate fields.
+  // Browserbase external proxy requires credentials separate from server URL.
+  const match = base.match(/^https?:\/\/([^:]+):([^@]+)@(.+)$/);
+  if (!match) return null;
+  const [, baseUser, password, hostPort] = match;
+  // Sticky session: same IP held throughout one run, rotates between runs.
   const sessionId = Math.random().toString(36).substring(2, 12);
-  return base.replace(/^(https?:\/\/)([^:]+):/, `$1$2-session-${sessionId}:`);
+  return {
+    server: `http://${hostPort}`,
+    username: `${baseUser}-session-${sessionId}`,
+    password,
+  };
 }
 
 function extractionValid(e: Listing): boolean {
@@ -158,20 +166,33 @@ function extractionValid(e: Listing): boolean {
 // Main agent flow
 // ---------------------------------------------------------------------------
 
+function validateAgentInput(input: AgentInput): void {
+  try {
+    const parsed = new URL(input.url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (!["ebay.com", "ebay.co.uk", "ebay.ca", "ebay.com.au"].includes(host)) {
+      throw new Error(`Unexpected domain: ${host}`);
+    }
+    if (!input.url.includes("/itm/")) {
+      throw new Error("URL must contain /itm/");
+    }
+  } catch (err) {
+    console.error(`[agent] Invalid input URL: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+}
+
 async function runAgent(input: AgentInput): Promise<void> {
-  console.log(`[agent] Starting for deal_id=${input.deal_id}`);
-  console.log(`[agent] URL: ${input.url}`);
+  validateAgentInput(input);
+  const itemId = input.url.split("/itm/")[1]?.split("?")[0] ?? "unknown";
+  console.log(`[agent] Starting for deal_id=${input.deal_id} item=${itemId}`);
   console.log(`[agent] max_allowed_price=$${input.max_allowed_price} cert_prefix="${input.expected_cert_prefix}"`);
 
   fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 
   // Prefer persistent session if BROWSERBASE_SESSION_ID is set in env
   const sessionId = process.env.BROWSERBASE_SESSION_ID;
-  const proxyUrl = buildProxyUrl();
-  console.log(proxyUrl
-    ? "[agent] Residential proxy active — sticky session"
-    : "[agent] No residential proxy — captcha possible on guest checkout"
-  );
+  console.log("[agent] Using Browserbase built-in residential proxy + solveCaptchas");
 
   const stagehand = new Stagehand({
     env: "BROWSERBASE",
@@ -181,7 +202,7 @@ async function runAgent(input: AgentInput): Promise<void> {
       : {
           browserbaseSessionCreateParams: {
             projectId: process.env.BROWSERBASE_PROJECT_ID!,
-            ...(proxyUrl ? { proxies: [{ type: "external", server: proxyUrl }] } : {}),
+            proxies: true, // Browserbase built-in residential proxy (included in Developer plan)
             browserSettings: {
               solveCaptchas: true,
               viewport: { width: 1920, height: 1080 },
@@ -194,11 +215,51 @@ async function runAgent(input: AgentInput): Promise<void> {
     await stagehand.init();
 
     const activeSessionId = stagehand.browserbaseSessionID ?? "unknown";
-    console.log(`[agent] Browserbase session: ${activeSessionId}`);
-    console.log(`[agent] Watch live: https://www.browserbase.com/sessions/${activeSessionId}`);
+    // Log only first 8 chars — full session ID is a capability token
+    console.log(`[agent] Browserbase session: ${activeSessionId.slice(0, 8)}...`);
+
+    // Listen for Browserbase captcha-solving events
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (stagehand.context.pages()[0] as any).on("console", (msg: any) => {
+      const text = msg.text();
+      if (text === "browserbase-solving-started") console.log("[agent] Browserbase captcha solving started...");
+      if (text === "browserbase-solving-finished") console.log("[agent] Browserbase captcha solving finished");
+    });
 
     // Stagehand v3: page accessed via stagehand.context.pages()[0]
     const page = stagehand.context.pages()[0];
+
+    // -----------------------------------------------------------------------
+    // Step 0: Log in to eBay — uses saved address so no shipping form needed
+    // (Wrapped in try-catch: if home page times out, we fall back to guest checkout)
+    // -----------------------------------------------------------------------
+    try {
+      console.log("[agent] Checking eBay login status...");
+      await page.goto("https://www.ebay.com", { waitUntil: "domcontentloaded" });
+      await sleep(2000);
+      const homeText = await page.evaluate<string>("document.body.innerText");
+      // "Sign out" only appears in nav when genuinely logged in; "Hi!" appears for guests too
+      const isLoggedIn = homeText.includes("Sign out");
+      if (!isLoggedIn) {
+        console.log("[agent] Not signed in — logging in to eBay...");
+        await stagehand.act("click the Sign in link in the top navigation bar");
+        await sleep(2000);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await stagehand.act({ action: "type %email% into the email or username input", variables: { email: process.env.EBAY_USERNAME! } } as any);
+        await stagehand.act("click the Continue button");
+        await sleep(2500);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await stagehand.act({ action: "type %password% into the password input", variables: { password: process.env.EBAY_PASSWORD! } } as any);
+        await stagehand.act("click the Sign in button");
+        await sleep(4000);
+        const afterLogin = await page.evaluate<string>("window.location.href");
+        console.log("[agent] Login complete, on:", afterLogin.split("?")[0]);
+      } else {
+        console.log("[agent] Already logged in to eBay");
+      }
+    } catch (loginStepErr) {
+      console.warn("[agent] Step 0 (login) failed — continuing to listing with guest checkout:", loginStepErr);
+    }
 
     // -----------------------------------------------------------------------
     // Step 1: Load the listing page
@@ -248,6 +309,9 @@ async function runAgent(input: AgentInput): Promise<void> {
 
     const extractionLatencyMs = Date.now() - extractStart;
 
+    // Capture raw page text for A/B model comparison (sent to backend, never to LLM here)
+    const listingPageText = (await page.evaluate<string>("document.body.innerText")).slice(0, 4000);
+
     console.log(
       `[agent] Extracted: title="${extracted.title}" cert=${extracted.cert_number} ` +
       `price=$${extracted.price} pop10=${extracted.psa_pop_grade10 ?? "?"}/` +
@@ -281,6 +345,7 @@ async function runAgent(input: AgentInput): Promise<void> {
         rejection_reason: reason,
         model_used: MODEL_USED,
         extraction_latency_ms: extractionLatencyMs,
+        listing_page_text: listingPageText,
       });
       return;
     }
@@ -306,6 +371,7 @@ async function runAgent(input: AgentInput): Promise<void> {
         rejection_reason: reason,
         model_used: MODEL_USED,
         extraction_latency_ms: extractionLatencyMs,
+        listing_page_text: listingPageText,
       });
       return;
     }
@@ -335,6 +401,7 @@ async function runAgent(input: AgentInput): Promise<void> {
         rejection_reason: reason,
         model_used: MODEL_USED,
         extraction_latency_ms: extractionLatencyMs,
+        listing_page_text: listingPageText,
       });
       return;
     }
@@ -364,16 +431,38 @@ async function runAgent(input: AgentInput): Promise<void> {
       const currentUrl = await page.evaluate<string>("window.location.href");
       console.log("[agent] After Buy It Now, on:", currentUrl);
 
-      // eBay either shows a modal ON the listing page or navigates to sign-in.
-      // In both cases we want to click "Check out as guest" / "Continue as guest".
-      console.log("[agent] Looking for guest checkout option (modal or page)...");
+      // eBay may redirect to sign-in page if session isn't authenticated
+      const afterBinUrl = await page.evaluate<string>("window.location.href");
+      if (afterBinUrl.includes("signin.ebay.com") || afterBinUrl.includes("SignIn")) {
+        console.log("[agent] Buy It Now redirected to sign-in — logging in now...");
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await stagehand.act({ action: "type %email% into the email or username field", variables: { email: process.env.EBAY_USERNAME! } } as any);
+          await stagehand.act("click the Continue button");
+          await sleep(2500);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await stagehand.act({ action: "type %password% into the password field", variables: { password: process.env.EBAY_PASSWORD! } } as any);
+          await stagehand.act("click the Sign in button");
+          await sleep(4000);
+          const postLoginUrl = await page.evaluate<string>("window.location.href");
+          console.log("[agent] Signed in, navigated to:", postLoginUrl.split("?")[0]);
+        } catch (signInErr) {
+          console.warn("[agent] Sign-in at checkout failed — will try guest:", signInErr);
+        }
+      }
+
+      // eBay shows a modal or navigates after Buy It Now / sign-in.
+      // Logged-in: proceeds to checkout review automatically.
+      // Guest: "Check out as guest" / "Continue as guest".
+      console.log("[agent] Handling checkout modal...");
       try {
-        await stagehand.act("click the 'Check out as guest' or 'Continue as guest' button");
+        await stagehand.act(
+          "click the 'Check out as guest' or 'Continue as guest' or 'Proceed to checkout' button"
+        );
         await sleep(3000);
-        console.log("[agent] Guest checkout selected, now on:", await page.evaluate<string>("window.location.href"));
-      } catch (_guestErr) {
-        // No guest button found — may already be on checkout page
-        console.log("[agent] No guest button found, continuing...");
+        console.log("[agent] Checkout initiated, on:", await page.evaluate<string>("window.location.href"));
+      } catch (_modalErr) {
+        console.log("[agent] No modal button found — may already be in checkout flow, continuing...");
       }
 
       // Step 7: Walk through checkout funnel to payment screen
@@ -382,29 +471,18 @@ async function runAgent(input: AgentInput): Promise<void> {
         const stepUrl = await page.evaluate<string>("window.location.href");
         console.log(`[agent] Step ${step + 1}: ${stepUrl.split("?")[0]}`);
 
-        // hCaptcha: the checkbox is inside an iframe — must use Playwright frameLocator
-        // (Stagehand act() cannot reach cross-origin iframes)
+        // Captcha: Browserbase solveCaptchas:true + built-in proxy handles this automatically.
+        // Docs say solving takes up to 30s. Just wait and let it resolve — do not interfere.
         if (stepUrl.includes("captcha") || stepUrl.includes("splashui")) {
-          console.log("[agent] hCaptcha detected — using Playwright frameLocator to click checkbox...");
-          try {
-            // Wait for the hCaptcha iframe to fully load
-            await page.waitForSelector('iframe[src*="hcaptcha"], iframe[data-hcaptcha-widget-id]', {
-              state: "attached", timeout: 10_000,
-            });
-            await sleep(3000); // let iframe JS initialize
-            const captchaFrame = page.frameLocator('iframe[src*="hcaptcha"], iframe[data-hcaptcha-widget-id]');
-            await captchaFrame.locator("#checkbox").click();
-            console.log("[agent] Captcha checkbox clicked");
-            await sleep(6000); // wait for captcha processing + possible image challenge
-            const postCaptchaUrl = await page.evaluate<string>("window.location.href");
-            console.log("[agent] After captcha, on:", postCaptchaUrl);
-            if (!postCaptchaUrl.includes("captcha")) {
-              continue; // passed — continue checkout
-            }
-          } catch (_captchaErr) {
-            console.log("[agent] Could not solve captcha:", String(_captchaErr).split("\n")[0]);
+          console.log("[agent] Captcha page — waiting up to 30s for Browserbase auto-solver...");
+          await sleep(30000);
+          const postCaptchaUrl = await page.evaluate<string>("window.location.href");
+          console.log("[agent] After captcha wait, on:", postCaptchaUrl.split("?")[0]);
+          if (postCaptchaUrl.includes("captcha") || postCaptchaUrl.includes("splashui")) {
+            console.log("[agent] Captcha not solved after 30s — breaking");
+            break;
           }
-          break; // captcha stuck — screenshot current state and report
+          continue; // solved — continue checkout
         }
 
         // DRY RUN: stop before confirming payment
@@ -418,6 +496,47 @@ async function runAgent(input: AgentInput): Promise<void> {
             console.log("[agent] DRY RUN — reached payment page, stopping before confirm");
             checkoutReached = true;
             break;
+          }
+        }
+
+        // Detect and fill shipping/contact form if present on this step
+        const stepText = await page.evaluate<string>("document.body.innerText");
+        const onAddressForm =
+          stepText.includes("First name") ||
+          stepText.includes("Street address") ||
+          stepText.includes("Ship to") ||
+          stepText.includes("Shipping address");
+        if (onAddressForm) {
+          console.log("[agent] Shipping form detected — filling address...");
+          try {
+            if (stepText.includes("Email")) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await stagehand.act({ action: "type %e% into the email address field", variables: { e: process.env.EBAY_USERNAME! } } as any);
+              await sleep(400);
+            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the First name field with %fn%", variables: { fn: process.env.SHIPPING_FIRST_NAME ?? "Alex" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the Last name field with %ln%", variables: { ln: process.env.SHIPPING_LAST_NAME ?? "Natt" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the Street address field with %addr%", variables: { addr: process.env.SHIPPING_ADDRESS ?? "350 Fifth Avenue" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the City field with %city%", variables: { city: process.env.SHIPPING_CITY ?? "New York" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "select or fill in the State field with %state%", variables: { state: process.env.SHIPPING_STATE ?? "NY" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the ZIP code field with %zip%", variables: { zip: process.env.SHIPPING_ZIP ?? "10118" } } as any);
+            await sleep(300);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await stagehand.act({ action: "fill in the Phone number field with %phone%", variables: { phone: process.env.SHIPPING_PHONE ?? "2125550100" } } as any);
+            await sleep(500);
+          } catch (fillErr) {
+            console.warn("[agent] Address form fill partial — continuing:", fillErr);
           }
         }
 
@@ -462,36 +581,36 @@ async function runAgent(input: AgentInput): Promise<void> {
     fs.writeFileSync(domPath, domContent, "utf8");
     console.log(`[agent] Screenshot saved → ${screenshotFile}`);
 
+    // Always report result so backend can run A/B model comparison.
+    // In dry_run mode, status is REJECTED with reason "dry_run" (no purchase made).
+    const finalStatus = input.dry_run
+      ? "REJECTED"
+      : checkoutReached ? "BOUGHT" : "REJECTED";
+    const rejectionReason = input.dry_run
+      ? "dry_run"
+      : checkoutReached ? null : `checkout_blocked: ${checkoutError}`;
+
     if (input.dry_run) {
-      console.log("[agent] DRY RUN complete — skipping conductor report");
-      console.log("[agent] Result:", JSON.stringify({
-        cert: extracted.cert_number,
-        price_locked: extracted.price,
-        psa_pop: `${extracted.psa_pop_grade10 ?? "?"}/${extracted.psa_pop_total ?? "?"}`,
-        auth_guarantee: extracted.authenticity_guaranteed,
-        checkout_reached: checkoutReached,
-        screenshot: `receipts/${screenshotFile}`,
-      }, null, 2));
-    } else {
-      await reportResult({
-        deal_id: input.deal_id,
-        session_id: activeSessionId,
-        verified_cert: extracted.cert_number,
-        price_locked: extracted.price,
-        psa_pop_grade10: extracted.psa_pop_grade10 ?? null,
-        psa_pop_total: extracted.psa_pop_total ?? null,
-        authenticity_guaranteed: extracted.authenticity_guaranteed ?? null,
-        screenshot_path: `receipts/${screenshotFile}`,
-        dom_snapshot_path: `receipts/${domFile}`,
-        agent_extraction_json: JSON.stringify(extracted),
-        final_status: checkoutReached ? "BOUGHT" : "REJECTED",
-        rejection_reason: checkoutReached
-          ? null
-          : `checkout_blocked: ${checkoutError}`,
-        model_used: MODEL_USED,
-        extraction_latency_ms: extractionLatencyMs,
-      });
+      console.log("[agent] DRY RUN — reached checkout, reporting result for A/B comparison");
     }
+
+    await reportResult({
+      deal_id: input.deal_id,
+      session_id: activeSessionId,
+      verified_cert: extracted.cert_number,
+      price_locked: extracted.price,
+      psa_pop_grade10: extracted.psa_pop_grade10 ?? null,
+      psa_pop_total: extracted.psa_pop_total ?? null,
+      authenticity_guaranteed: extracted.authenticity_guaranteed ?? null,
+      screenshot_path: `receipts/${screenshotFile}`,
+      dom_snapshot_path: `receipts/${domFile}`,
+      agent_extraction_json: JSON.stringify(extracted),
+      final_status: finalStatus,
+      rejection_reason: rejectionReason,
+      model_used: MODEL_USED,
+      extraction_latency_ms: extractionLatencyMs,
+      listing_page_text: listingPageText,
+    });
   } finally {
     await stagehand.close();
     console.log("[agent] Session closed");

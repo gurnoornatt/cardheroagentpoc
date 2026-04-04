@@ -4,19 +4,19 @@ import { Wifi, WifiOff } from "lucide-react";
 import { api } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Deals } from "./pages/Deals";
-import { WantList } from "./pages/WantList";
 import { Lab } from "./pages/Lab";
+import { Pipeline } from "./pages/Pipeline";
 
-type Tab = "deals" | "want-list" | "lab";
+type Tab = "run" | "deals" | "lab";
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: "run", label: "Run" },
   { id: "deals", label: "Deals" },
-  { id: "want-list", label: "Want List" },
   { id: "lab", label: "Lab" },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("deals");
+  const [tab, setTab] = useState<Tab>("run");
 
   const { data: health, isError } = useQuery({
     queryKey: ["health"],
@@ -58,8 +58,8 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
+        {tab === "run" && <Pipeline />}
         {tab === "deals" && <Deals health={health} />}
-        {tab === "want-list" && <WantList />}
         {tab === "lab" && <Lab />}
       </main>
     </div>

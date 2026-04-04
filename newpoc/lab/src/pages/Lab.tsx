@@ -3,9 +3,12 @@ import { api } from "../lib/api";
 import { fmtMs, fmtPct, MODEL_COLORS, cn } from "../lib/utils";
 
 const MODEL_LABELS: Record<string, string> = {
+  "google/gemini-3-flash-preview": "Gemini 3 Flash",
+  "openai/gpt-5-nano":             "GPT-5 Nano",
+  // legacy seed rows
   "google/gemini-2.5-flash": "Gemini 2.5",
-  "claude-sonnet-4-6": "Sonnet 4.6",
-  "gpt-4o": "GPT-4o",
+  "claude-sonnet-4-6":       "Sonnet 4.6",
+  "gpt-4o":                  "GPT-4o",
 };
 
 function label(m: string) { return MODEL_LABELS[m] ?? m; }
@@ -29,12 +32,15 @@ export function Lab() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="font-serif text-lg text-gray-900">Model Lab</h2>
+        <div>
+          <h2 className="font-serif text-lg text-gray-900">Model Lab</h2>
+          <p className="text-sm text-muted mt-0.5">A/B comparison — runs trigger automatically after each pipeline execution.</p>
+        </div>
         <span className="text-sm text-muted">{runs.length} runs</span>
       </div>
 
       {/* Model summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {models.map(({ model, run_count, cert_accuracy, avg_latency_ms }) => {
           const acc = cert_accuracy != null ? cert_accuracy * 100 : null;
           return (
@@ -79,7 +85,7 @@ export function Lab() {
                 <tr><td colSpan={5} className="text-center py-10 text-muted text-sm">Loading…</td></tr>
               )}
               {!isLoading && runs.length === 0 && (
-                <tr><td colSpan={5} className="text-center py-10 text-muted text-sm">No runs yet</td></tr>
+                <tr><td colSpan={5} className="text-center py-10 text-muted text-sm">No runs yet — use Run tab to trigger the pipeline</td></tr>
               )}
               {runs.map((run) => (
                 <tr key={run.id} className="table-row">
