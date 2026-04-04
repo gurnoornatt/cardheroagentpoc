@@ -16,9 +16,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Agent Node deps — install before copying source for layer cache
-RUN npm install -g pnpm
-COPY newpoc/agent/package.json newpoc/agent/pnpm-lock.yaml newpoc/agent/
-RUN cd newpoc/agent && pnpm install --frozen-lockfile
+COPY newpoc/agent/package.json newpoc/agent/
+RUN cd newpoc/agent && npm install
 
 # Copy all source
 COPY . .
