@@ -195,6 +195,33 @@ async function runAgent(input: AgentInput): Promise<void> {
   const itemId = input.url.split("/itm/")[1]?.split("?")[0] ?? "unknown";
   console.log(`[agent] Starting for deal_id=${input.deal_id} item=${itemId}`);
   console.log(`[agent] max_allowed_price=$${input.max_allowed_price} cert_prefix="${input.expected_cert_prefix}"`);
+  console.log(`[agent] CONDUCTOR_URL=${CONDUCTOR_URL}`);
+
+  // Validate required env vars up front — loud failure beats silent crash
+  const required = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "GOOGLE_API_KEY"];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    const msg = `Missing required env vars: ${missing.join(", ")}`;
+    console.error(`[agent] FATAL: ${msg}`);
+    await postLog(input.deal_id, `ERROR: ${msg}`);
+    await reportResult({
+      deal_id: input.deal_id,
+      session_id: "none",
+      verified_cert: null,
+      price_locked: null,
+      psa_pop_grade10: null,
+      psa_pop_total: null,
+      authenticity_guaranteed: null,
+      screenshot_path: null,
+      dom_snapshot_path: null,
+      agent_extraction_json: JSON.stringify({ _rejection_reason: msg }),
+      final_status: "REJECTED",
+      rejection_reason: msg,
+      model_used: MODEL_USED,
+      extraction_latency_ms: null,
+    });
+    process.exit(1);
+  }
 
   fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
 
@@ -253,11 +280,11 @@ async function runAgent(input: AgentInput): Promise<void> {
         await stagehand.act("click the Sign in link in the top navigation bar");
         await sleep(2000);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await stagehand.act({ action: "type %email% into the email or username input", variables: { email: process.env.EBAY_USERNAME! } } as any);
+        await stagehand.act({ instruction: "type %email% into the email or username input", variables: { email: process.env.EBAY_USERNAME! } } as any);
         await stagehand.act("click the Continue button");
         await sleep(2500);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await stagehand.act({ action: "type %password% into the password input", variables: { password: process.env.EBAY_PASSWORD! } } as any);
+        await stagehand.act({ instruction: "type %password% into the password input", variables: { password: process.env.EBAY_PASSWORD! } } as any);
         await stagehand.act("click the Sign in button");
         await sleep(4000);
         const afterLogin = await page.evaluate<string>("window.location.href");
@@ -274,7 +301,7 @@ async function runAgent(input: AgentInput): Promise<void> {
     // -----------------------------------------------------------------------
     const cleanUrl = input.url.split("?")[0];
     await postLog(input.deal_id, `Loading eBay listing...`);
-    await page.goto(cleanUrl, { waitUntil: "load" });
+    await page.goto(cleanUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
     await sleep(3000);  // Wait for eBay React bundles to finish rendering
     await postLog(input.deal_id, "Page loaded — extracting PSA data...");
     console.log("[agent] Page settled — extracting listing data...");
@@ -451,11 +478,11 @@ async function runAgent(input: AgentInput): Promise<void> {
         console.log("[agent] Buy It Now redirected to sign-in — logging in now...");
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await stagehand.act({ action: "type %email% into the email or username field", variables: { email: process.env.EBAY_USERNAME! } } as any);
+          await stagehand.act({ instruction: "type %email% into the email or username field", variables: { email: process.env.EBAY_USERNAME! } } as any);
           await stagehand.act("click the Continue button");
           await sleep(2500);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await stagehand.act({ action: "type %password% into the password field", variables: { password: process.env.EBAY_PASSWORD! } } as any);
+          await stagehand.act({ instruction: "type %password% into the password field", variables: { password: process.env.EBAY_PASSWORD! } } as any);
           await stagehand.act("click the Sign in button");
           await sleep(4000);
           const postLoginUrl = await page.evaluate<string>("window.location.href");
@@ -525,29 +552,29 @@ async function runAgent(input: AgentInput): Promise<void> {
           try {
             if (stepText.includes("Email")) {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              await stagehand.act({ action: "type %e% into the email address field", variables: { e: process.env.EBAY_USERNAME! } } as any);
+              await stagehand.act({ instruction: "type %e% into the email address field", variables: { e: process.env.EBAY_USERNAME! } } as any);
               await sleep(400);
             }
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the First name field with %fn%", variables: { fn: process.env.SHIPPING_FIRST_NAME ?? "Alex" } } as any);
+            await stagehand.act({ instruction: "fill in the First name field with %fn%", variables: { fn: process.env.SHIPPING_FIRST_NAME ?? "Alex" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the Last name field with %ln%", variables: { ln: process.env.SHIPPING_LAST_NAME ?? "Natt" } } as any);
+            await stagehand.act({ instruction: "fill in the Last name field with %ln%", variables: { ln: process.env.SHIPPING_LAST_NAME ?? "Natt" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the Street address field with %addr%", variables: { addr: process.env.SHIPPING_ADDRESS ?? "350 Fifth Avenue" } } as any);
+            await stagehand.act({ instruction: "fill in the Street address field with %addr%", variables: { addr: process.env.SHIPPING_ADDRESS ?? "350 Fifth Avenue" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the City field with %city%", variables: { city: process.env.SHIPPING_CITY ?? "New York" } } as any);
+            await stagehand.act({ instruction: "fill in the City field with %city%", variables: { city: process.env.SHIPPING_CITY ?? "New York" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "select or fill in the State field with %state%", variables: { state: process.env.SHIPPING_STATE ?? "NY" } } as any);
+            await stagehand.act({ instruction: "select or fill in the State field with %state%", variables: { state: process.env.SHIPPING_STATE ?? "NY" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the ZIP code field with %zip%", variables: { zip: process.env.SHIPPING_ZIP ?? "10118" } } as any);
+            await stagehand.act({ instruction: "fill in the ZIP code field with %zip%", variables: { zip: process.env.SHIPPING_ZIP ?? "10118" } } as any);
             await sleep(300);
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await stagehand.act({ action: "fill in the Phone number field with %phone%", variables: { phone: process.env.SHIPPING_PHONE ?? "2125550100" } } as any);
+            await stagehand.act({ instruction: "fill in the Phone number field with %phone%", variables: { phone: process.env.SHIPPING_PHONE ?? "2125550100" } } as any);
             await sleep(500);
           } catch (fillErr) {
             console.warn("[agent] Address form fill partial — continuing:", fillErr);

@@ -16,8 +16,9 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Agent Node deps — install before copying source for layer cache
+# --include=dev ensures ts-node is installed even if NODE_ENV=production
 COPY newpoc/agent/package.json newpoc/agent/
-RUN cd newpoc/agent && npm install
+RUN cd newpoc/agent && npm install --include=dev
 
 # Copy all source
 COPY . .
