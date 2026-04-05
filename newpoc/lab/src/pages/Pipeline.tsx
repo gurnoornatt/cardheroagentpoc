@@ -28,19 +28,16 @@ function color(m: string) {
 function StepRow({
   step,
   currentStatus,
-  dealStatus,
   index,
   activeStep,
 }: {
   step: (typeof STEPS)[number];
   currentStatus: string | null;
-  dealStatus: string | null;
   index: number;
   activeStep: number;
 }) {
   const done = index < activeStep;
   const active = index === activeStep;
-  const pending = index > activeStep;
 
   return (
     <div className={cn("flex items-start gap-3 p-3 rounded-lg transition-colors", active && "bg-blue-50")}>
@@ -247,7 +244,6 @@ export function Pipeline() {
                 index={i}
                 activeStep={activeStep}
                 currentStatus={null}
-                dealStatus={deal?.status ?? null}
               />
             ))}
           </div>
