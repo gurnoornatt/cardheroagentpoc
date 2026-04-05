@@ -117,7 +117,7 @@ const CONDUCTOR_URL = process.env.CONDUCTOR_URL
   ?? (process.env.PORT ? `http://localhost:${process.env.PORT}` : "http://localhost:8001");
 const RECEIPTS_DIR = path.join(__dirname, "../receipts");
 const AGENT_BUDGET = parseFloat(process.env.AGENT_BUDGET ?? "150.00");
-const MODEL_USED = "anthropic/claude-sonnet-4-6";
+const MODEL_USED = "anthropic/claude-haiku-4-5-20251001";
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
