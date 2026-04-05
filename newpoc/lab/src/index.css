@@ -5,70 +5,111 @@
 @layer base {
   :root {
     --canvas: #fafaf8;
+    --surface: #ffffff;
+    --border: #e4e4e7;
+    --muted: #71717a;
+    --text: #18181b;
     --gold: #88952e;
-    --border: #e8e6e0;
-    --muted: #9b9589;
+  }
+
+  .dark {
+    --canvas: #09090b;
+    --surface: #18181b;
+    --border: #27272a;
+    --muted: #71717a;
+    --text: #fafafa;
+    --gold: #a3b136;
   }
 
   html {
-    font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui,
-      sans-serif;
+    font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
 
   body {
     background-color: var(--canvas);
-    color: #1a1a17;
+    color: var(--text);
+    transition: background-color 0.2s, color 0.2s;
   }
 
-  * {
-    border-color: var(--border);
-  }
+  * { border-color: var(--border); }
 }
 
 @layer components {
   .card {
-    @apply bg-white rounded-2xl shadow-card border border-border p-5;
+    @apply rounded-2xl border p-5 transition-colors;
+    background-color: var(--surface);
+    border-color: var(--border);
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  }
+  .dark .card {
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4);
   }
 
   .badge {
     @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
 
-  .tab-btn {
-    @apply px-4 py-2 text-sm font-medium rounded-lg transition-colors;
-  }
-
-  .tab-btn-active {
-    @apply bg-gold text-white;
-  }
-
-  .tab-btn-inactive {
-    @apply text-muted hover:text-gray-700 hover:bg-gray-100;
-  }
-
-  .stat-card {
-    @apply card flex flex-col gap-1;
-  }
-
   .table-th {
-    @apply px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wider;
+    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider;
+    color: var(--muted);
   }
-
   .table-td {
-    @apply px-4 py-3 text-sm text-gray-700;
+    @apply px-4 py-3 text-sm;
+    color: var(--text);
   }
-
   .table-row {
-    @apply border-t border-border hover:bg-gray-50 transition-colors;
+    @apply border-t transition-colors;
+    border-color: var(--border);
+  }
+
+  .input-base {
+    @apply w-full rounded-xl px-4 py-3 text-sm outline-none transition-all;
+    background-color: var(--surface);
+    border: 1.5px solid var(--border);
+    color: var(--text);
+  }
+  .input-base::placeholder { color: var(--muted); }
+  .input-base:focus {
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 15%, transparent);
+  }
+
+  .btn-primary {
+    @apply rounded-xl px-6 py-3 text-sm font-semibold text-white transition-all whitespace-nowrap;
+    background-color: var(--gold);
+  }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn-primary:disabled { @apply opacity-40 cursor-not-allowed; }
+
+  .terminal {
+    @apply rounded-xl p-4 font-mono text-xs leading-relaxed overflow-y-auto;
+    background: #09090b;
+    color: #4ade80;
+    border: 1px solid #27272a;
+    max-height: 220px;
+    min-height: 120px;
   }
 }
 
-/* Smooth pulse for live indicator */
-@keyframes live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* Cursor blink */
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.cursor-blink {
+  display: inline-block;
+  width: 7px; height: 13px;
+  background: #4ade80;
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-left: 2px;
 }
-.live-dot {
-  animation: live-pulse 2s ease-in-out infinite;
+
+/* Live dot */
+@keyframes live-pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.live-dot { animation: live-pulse 2s ease-in-out infinite; }
+
+/* Fade-up entry */
+@keyframes fade-up {
+  from { opacity:0; transform:translateY(10px); }
+  to   { opacity:1; transform:translateY(0); }
 }
+.fade-up { animation: fade-up 0.3s ease-out forwards; }

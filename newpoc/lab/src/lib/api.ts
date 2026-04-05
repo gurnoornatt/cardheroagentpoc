@@ -127,4 +127,6 @@ export const api = {
     http
       .post<{ deal_id: number; status: string }>("/pipeline/run", { url, max_price, dry_run: true })
       .then((r) => r.data),
+  dealLogs: (deal_id: number) =>
+    http.get<{ logs: string[] }>(`/deals/${deal_id}/logs`).then((r) => r.data.logs),
 };

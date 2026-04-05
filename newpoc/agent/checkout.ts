@@ -123,6 +123,12 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function postLog(dealId: number, message: string): Promise<void> {
+  try {
+    await axios.post(`${CONDUCTOR_URL}/deals/${dealId}/log`, { message }, { timeout: 3_000 });
+  } catch { /* non-critical — never fail the agent over a log */ }
+}
+
 async function reportResult(result: AgentResult): Promise<void> {
   try {
     await axios.post(`${CONDUCTOR_URL}/agent/result`, result, { timeout: 10_000 });
@@ -217,8 +223,8 @@ async function runAgent(input: AgentInput): Promise<void> {
     await stagehand.init();
 
     const activeSessionId = stagehand.browserbaseSessionID ?? "unknown";
-    // Log only first 8 chars — full session ID is a capability token
     console.log(`[agent] Browserbase session: ${activeSessionId.slice(0, 8)}...`);
+    await postLog(input.deal_id, "Connected to Browserbase cloud browser");
 
     // Listen for Browserbase captcha-solving events
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -267,8 +273,10 @@ async function runAgent(input: AgentInput): Promise<void> {
     // Step 1: Load the listing page
     // -----------------------------------------------------------------------
     const cleanUrl = input.url.split("?")[0];
+    await postLog(input.deal_id, `Loading eBay listing...`);
     await page.goto(cleanUrl, { waitUntil: "load" });
     await sleep(3000);  // Wait for eBay React bundles to finish rendering
+    await postLog(input.deal_id, "Page loaded — extracting PSA data...");
     console.log("[agent] Page settled — extracting listing data...");
 
     // -----------------------------------------------------------------------
@@ -319,6 +327,9 @@ async function runAgent(input: AgentInput): Promise<void> {
       `price=$${extracted.price} pop10=${extracted.psa_pop_grade10 ?? "?"}/` +
       `${extracted.psa_pop_total ?? "?"} auth=${extracted.authenticity_guaranteed ?? "?"} ` +
       `latency=${extractionLatencyMs}ms`,
+    );
+    await postLog(input.deal_id,
+      `Extracted — cert: ${extracted.cert_number}, price: $${extracted.price}, pop: ${extracted.psa_pop_grade10 ?? "?"}/${extracted.psa_pop_total ?? "?"}`
     );
 
     // -----------------------------------------------------------------------
@@ -408,6 +419,7 @@ async function runAgent(input: AgentInput): Promise<void> {
       return;
     }
 
+    await postLog(input.deal_id, "✓ All guards passed — navigating to checkout...");
     console.log("[agent] All guards passed — proceeding to checkout...");
 
     // -----------------------------------------------------------------------
@@ -568,6 +580,7 @@ async function runAgent(input: AgentInput): Promise<void> {
       }
 
       checkoutReached = true;
+      await postLog(input.deal_id, "✓ Reached payment screen — one click from purchase");
       console.log("[agent] Reached payment/order screen");
     } catch (err) {
       checkoutError = String(err);

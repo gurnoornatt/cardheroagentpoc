@@ -22,6 +22,7 @@ import subprocess
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -948,6 +949,29 @@ async def run_lab_extraction(payload: LabExtractRequest, db: Session = Depends(g
     return _lab_run_to_dict(run)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent log streaming (in-memory, keyed by deal_id)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_agent_logs: dict[int, list[str]] = {}
+
+
+class LogMessage(BaseModel):
+    message: str
+
+
+@app.post("/deals/{deal_id}/log", status_code=204)
+def add_agent_log(deal_id: int, payload: LogMessage):
+    if deal_id not in _agent_logs:
+        _agent_logs[deal_id] = []
+    _agent_logs[deal_id].append(payload.message)
+
+
+@app.get("/deals/{deal_id}/logs")
+def get_agent_logs(deal_id: int):
+    return {"logs": _agent_logs.get(deal_id, [])}
+
+
 def _lab_run_to_dict(r: LabRun) -> dict:
     return {
         "id": r.id,
@@ -963,3 +987,12 @@ def _lab_run_to_dict(r: LabRun) -> dict:
         "latency_ms": r.latency_ms,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Static files — serve agent screenshots
+# Must be mounted AFTER all API routes
+# ─────────────────────────────────────────────────────────────────────────────
+_RECEIPTS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../receipts"))
+os.makedirs(_RECEIPTS_PATH, exist_ok=True)
+app.mount("/receipts", StaticFiles(directory=_RECEIPTS_PATH), name="receipts")

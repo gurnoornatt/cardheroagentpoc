@@ -5,6 +5,10 @@
       "destination": "https://cardheroagentpoc-production.up.railway.app/:path*"
     },
     {
+      "source": "/receipts/:path*",
+      "destination": "https://cardheroagentpoc-production.up.railway.app/receipts/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
