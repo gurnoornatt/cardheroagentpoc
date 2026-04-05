@@ -112,7 +112,9 @@ type Listing = z.infer<typeof ListingSchema>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CONDUCTOR_URL = process.env.CONDUCTOR_URL ?? "http://localhost:8001";
+// On Railway, PORT is injected dynamically. Agent runs in same container so use localhost.
+const CONDUCTOR_URL = process.env.CONDUCTOR_URL
+  ?? (process.env.PORT ? `http://localhost:${process.env.PORT}` : "http://localhost:8001");
 const RECEIPTS_DIR = path.join(__dirname, "../receipts");
 const AGENT_BUDGET = parseFloat(process.env.AGENT_BUDGET ?? "150.00");
 const MODEL_USED = "google/gemini-2.5-flash";

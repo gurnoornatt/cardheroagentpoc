@@ -860,8 +860,8 @@ def run_pipeline(payload: PipelineRunRequest, request: Request, db: Session = De
     subprocess.Popen(
         ["npx", "ts-node", "checkout.ts", agent_input],
         cwd=AGENT_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=None,   # inherit Railway log stream
+        stderr=None,   # inherit Railway log stream — shows agent errors
     )
 
     logger.info(f"[pipeline/run] deal_id={deal.id} url={clean_url} max_price={payload.max_price}")
