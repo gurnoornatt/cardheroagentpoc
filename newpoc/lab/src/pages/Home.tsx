@@ -146,6 +146,7 @@ export function Home() {
   const [error, setError] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+  const runStartedAt = useRef<number>(0);
   const terminalRef = useRef<HTMLDivElement>(null);
 
   // Health check
@@ -200,11 +201,15 @@ export function Home() {
     }
   }, [logs]);
 
-  // Advance step based on deal status
+  // Advance step based on deal status; timeout after 5 min stuck in ANALYZING
   useEffect(() => {
     if (!deal) return;
     if (deal.status === "ANALYZING") {
       setActiveStep((prev) => Math.max(prev, 3));
+      if (runStartedAt.current && Date.now() - runStartedAt.current > 5 * 60 * 1000) {
+        setError("Agent timed out — deal is stuck in ANALYZING. Check Railway logs for errors.");
+        setPhase("error");
+      }
     } else if (deal.status === "BOUGHT" || deal.status === "REJECTED") {
       if (abRuns.length >= 2) {
         setActiveStep(5);
@@ -232,6 +237,7 @@ export function Home() {
     setActiveStep(0); // "submitting" active
     setDealId(null);
     setLogs([]);
+    runStartedAt.current = Date.now();
 
     try {
       const result = await api.runPipeline(trimmed, price);

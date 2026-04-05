@@ -117,7 +117,7 @@ const CONDUCTOR_URL = process.env.CONDUCTOR_URL
   ?? (process.env.PORT ? `http://localhost:${process.env.PORT}` : "http://localhost:8001");
 const RECEIPTS_DIR = path.join(__dirname, "../receipts");
 const AGENT_BUDGET = parseFloat(process.env.AGENT_BUDGET ?? "150.00");
-const MODEL_USED = "google/gemini-2.5-flash";
+const MODEL_USED = "anthropic/claude-sonnet-4-6";
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -665,7 +665,24 @@ try {
   process.exit(1);
 }
 
-runAgent(input).catch((err) => {
+runAgent(input).catch(async (err) => {
   console.error("[agent] Fatal error:", err);
+  // Always mark the deal REJECTED so it doesn't stay stuck in ANALYZING forever
+  await reportResult({
+    deal_id: input.deal_id,
+    session_id: "unknown",
+    verified_cert: null,
+    price_locked: null,
+    psa_pop_grade10: null,
+    psa_pop_total: null,
+    authenticity_guaranteed: null,
+    screenshot_path: null,
+    dom_snapshot_path: null,
+    agent_extraction_json: JSON.stringify({ _rejection_reason: String(err).slice(0, 300) }),
+    final_status: "REJECTED",
+    rejection_reason: String(err).slice(0, 300),
+    model_used: MODEL_USED,
+    extraction_latency_ms: null,
+  });
   process.exit(1);
 });
