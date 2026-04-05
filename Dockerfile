@@ -26,4 +26,4 @@ COPY . .
 RUN mkdir -p /data
 
 EXPOSE 8001
-CMD uv run uvicorn newpoc.backend.main:app --host 0.0.0.0 --port ${PORT:-8001}
+CMD uv run python -m newpoc.backend.seed && uv run uvicorn newpoc.backend.main:app --host 0.0.0.0 --port ${PORT:-8001}
