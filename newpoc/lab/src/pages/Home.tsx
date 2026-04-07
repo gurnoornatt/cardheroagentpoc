@@ -208,6 +208,10 @@ function ScraperCard({
         </>
       )}
 
+      {!loading && stats && stats.count === 0 && (
+        <p className="text-xs text-amber-400">eBay blocked the direct request — this is why we use Apify.</p>
+      )}
+
       {!loading && !stats && (
         <p className="text-xs" style={{ color: "var(--muted)" }}>No results yet</p>
       )}
@@ -764,8 +768,8 @@ export function Home() {
                 </div>
               )}
 
-              {/* Browserbase live view */}
-              {bbSessionUrl && (
+              {/* Browserbase live view — iframe embed while session is RUNNING */}
+              {bbSessionUrl && phase === "running" && (
                 <div className="card p-0 overflow-hidden fade-up">
                   <div
                     className="flex items-center gap-2 px-4 py-2.5 border-b"
@@ -773,7 +777,7 @@ export function Home() {
                   >
                     <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
                     <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                      {phase === "running" ? "Browserbase — Live Session" : "Browserbase — Session Recording"}
+                      Live Browser Session
                     </span>
                     <a
                       href={bbSessionUrl}
@@ -782,17 +786,40 @@ export function Home() {
                       className="ml-auto flex items-center gap-1 text-xs hover:underline"
                       style={{ color: "var(--muted)" }}
                     >
-                      Open full screen <ExternalLink size={11} />
+                      Full screen <ExternalLink size={11} />
                     </a>
                   </div>
                   <iframe
                     src={bbSessionUrl}
                     className="w-full"
                     style={{ height: "480px", border: "none" }}
-                    title="Browserbase session"
+                    sandbox="allow-same-origin allow-scripts"
                     allow="clipboard-read; clipboard-write"
+                    title="Browserbase live session"
                   />
                 </div>
+              )}
+
+              {/* After session ends — link to Browserbase dashboard for recording */}
+              {bbSessionUrl && phase !== "running" && (
+                <a
+                  href="https://www.browserbase.com/sessions"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="card flex items-center gap-3 fade-up hover:opacity-80 transition-opacity"
+                  style={{ textDecoration: "none" }}
+                >
+                  <span className="w-2 h-2 rounded-full bg-zinc-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold" style={{ color: "var(--text)" }}>
+                      Watch session recording →
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--muted)" }}>
+                      browserbase.com/sessions — find the most recent run
+                    </p>
+                  </div>
+                  <ExternalLink size={14} style={{ color: "var(--muted)" }} />
+                </a>
               )}
 
               {/* Screenshot */}

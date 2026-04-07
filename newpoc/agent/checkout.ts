@@ -253,19 +253,23 @@ async function runAgent(input: AgentInput): Promise<void> {
     console.log(`[agent] Browserbase session: ${activeSessionId.slice(0, 8)}...`);
     await postLog(input.deal_id, "Connected to Browserbase cloud browser");
 
-    // Fetch live-view URL from Browserbase API and stream it to the UI
-    try {
-      const bbSession = await axios.get(
-        `https://api.browserbase.com/v1/sessions/${activeSessionId}`,
-        { headers: { "x-bb-api-key": process.env.BROWSERBASE_API_KEY! } }
-      );
-      const liveUrl: string = bbSession.data.debuggerFullscreenUrl ?? "";
-      if (liveUrl) {
-        await postLog(input.deal_id, `[BB_SESSION_URL] ${liveUrl}`);
-        console.log(`[agent] Live view: ${liveUrl}`);
+    // Fetch live-view URL from the /debug endpoint (separate from session object)
+    if (activeSessionId !== "unknown") {
+      try {
+        const debugResp = await axios.get(
+          `https://api.browserbase.com/v1/sessions/${activeSessionId}/debug`,
+          { headers: { "x-bb-api-key": process.env.BROWSERBASE_API_KEY! } }
+        );
+        const liveUrl: string = debugResp.data.debuggerFullscreenUrl ?? "";
+        if (liveUrl) {
+          // &navbar=false hides the browser chrome for a cleaner embed
+          const embedUrl = liveUrl.includes("?") ? `${liveUrl}&navbar=false` : `${liveUrl}?navbar=false`;
+          await postLog(input.deal_id, `[BB_SESSION_URL] ${embedUrl}`);
+          console.log(`[agent] Live view ready: ${embedUrl}`);
+        }
+      } catch (e) {
+        console.warn("[agent] Could not fetch BB debug URL:", (e as Error).message);
       }
-    } catch (e) {
-      console.warn("[agent] Could not fetch BB session debug URL:", e);
     }
 
     // Listen for Browserbase captcha-solving events
