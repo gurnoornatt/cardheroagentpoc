@@ -348,6 +348,7 @@ export function Home() {
   const [error, setError] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+  const [bbSessionUrl, setBbSessionUrl] = useState<string | null>(null);
   const runStartedAt = useRef<number>(0);
   const terminalRef = useRef<HTMLDivElement>(null);
 
@@ -377,12 +378,14 @@ export function Home() {
   });
   const abRuns = allRuns.filter((r) => r.deal_id === dealId);
 
-  // Poll agent logs while running
+  // Poll agent logs while running; parse Browserbase live-view URL when it appears
   useQuery({
     queryKey: ["deal-logs", dealId],
     queryFn: async () => {
       const newLogs = await api.dealLogs(dealId!);
       setLogs(newLogs);
+      const bbLog = newLogs.find((l) => l.startsWith("[BB_SESSION_URL]"));
+      if (bbLog) setBbSessionUrl(bbLog.replace("[BB_SESSION_URL] ", ""));
       return newLogs;
     },
     enabled: phase === "running" && dealId != null,
@@ -436,9 +439,10 @@ export function Home() {
 
     setError(null);
     setPhase("running");
-    setActiveStep(0); // "submitting" active
+    setActiveStep(0);
     setDealId(null);
     setLogs([]);
+    setBbSessionUrl(null);
     runStartedAt.current = Date.now();
 
     try {
@@ -676,11 +680,13 @@ export function Home() {
                   {logs.length === 0 ? (
                     <span style={{ opacity: 0.4 }}>Waiting for agent output...</span>
                   ) : (
-                    logs.map((line, i) => (
-                      <div key={i} className="fade-up">
-                        {">"} {line}
-                      </div>
-                    ))
+                    logs
+                      .filter((l) => !l.startsWith("[BB_SESSION_URL]"))
+                      .map((line, i) => (
+                        <div key={i} className="fade-up">
+                          {">"} {line}
+                        </div>
+                      ))
                   )}
                   {phase === "running" && <span className="cursor-blink" />}
                 </div>
@@ -755,6 +761,37 @@ export function Home() {
                       <ExternalLink size={11} /> View on eBay
                     </a>
                   )}
+                </div>
+              )}
+
+              {/* Browserbase live view */}
+              {bbSessionUrl && (
+                <div className="card p-0 overflow-hidden fade-up">
+                  <div
+                    className="flex items-center gap-2 px-4 py-2.5 border-b"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                    <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
+                      {phase === "running" ? "Browserbase — Live Session" : "Browserbase — Session Recording"}
+                    </span>
+                    <a
+                      href={bbSessionUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto flex items-center gap-1 text-xs hover:underline"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Open full screen <ExternalLink size={11} />
+                    </a>
+                  </div>
+                  <iframe
+                    src={bbSessionUrl}
+                    className="w-full"
+                    style={{ height: "480px", border: "none" }}
+                    title="Browserbase session"
+                    allow="clipboard-read; clipboard-write"
+                  />
                 </div>
               )}
 

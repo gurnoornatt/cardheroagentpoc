@@ -253,6 +253,21 @@ async function runAgent(input: AgentInput): Promise<void> {
     console.log(`[agent] Browserbase session: ${activeSessionId.slice(0, 8)}...`);
     await postLog(input.deal_id, "Connected to Browserbase cloud browser");
 
+    // Fetch live-view URL from Browserbase API and stream it to the UI
+    try {
+      const bbSession = await axios.get(
+        `https://api.browserbase.com/v1/sessions/${activeSessionId}`,
+        { headers: { "x-bb-api-key": process.env.BROWSERBASE_API_KEY! } }
+      );
+      const liveUrl: string = bbSession.data.debuggerFullscreenUrl ?? "";
+      if (liveUrl) {
+        await postLog(input.deal_id, `[BB_SESSION_URL] ${liveUrl}`);
+        console.log(`[agent] Live view: ${liveUrl}`);
+      }
+    } catch (e) {
+      console.warn("[agent] Could not fetch BB session debug URL:", e);
+    }
+
     // Listen for Browserbase captcha-solving events
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (stagehand.context.pages()[0] as any).on("console", (msg: any) => {
@@ -264,35 +279,7 @@ async function runAgent(input: AgentInput): Promise<void> {
     // Stagehand v3: page accessed via stagehand.context.pages()[0]
     const page = stagehand.context.pages()[0];
 
-    // -----------------------------------------------------------------------
-    // Step 0: Log in to eBay — uses saved address so no shipping form needed
-    // (Wrapped in try-catch: if home page times out, we fall back to guest checkout)
-    // -----------------------------------------------------------------------
-    try {
-      console.log("[agent] Checking eBay login status...");
-      await page.goto("https://www.ebay.com", { waitUntil: "domcontentloaded" });
-      await sleep(2000);
-      const homeText = await page.evaluate<string>("document.body.innerText");
-      // "Sign out" only appears in nav when genuinely logged in; "Hi!" appears for guests too
-      const isLoggedIn = homeText.includes("Sign out");
-      if (!isLoggedIn) {
-        console.log("[agent] Not signed in — logging in to eBay...");
-        await stagehand.act("click the Sign in link in the top navigation bar");
-        await sleep(2000);
-        await stagehand.act("type %email% into the email or username input", { variables: { email: process.env.EBAY_USERNAME! } });
-        await stagehand.act("click the Continue button");
-        await sleep(2500);
-        await stagehand.act("type %password% into the password input", { variables: { password: process.env.EBAY_PASSWORD! } });
-        await stagehand.act("click the Sign in button");
-        await sleep(4000);
-        const afterLogin = await page.evaluate<string>("window.location.href");
-        console.log("[agent] Login complete, on:", afterLogin.split("?")[0]);
-      } else {
-        console.log("[agent] Already logged in to eBay");
-      }
-    } catch (loginStepErr) {
-      console.warn("[agent] Step 0 (login) failed — continuing to listing with guest checkout:", loginStepErr);
-    }
+    // Step 0: Skipped — always use guest checkout (sub-$5k listings only)
 
     // -----------------------------------------------------------------------
     // Step 1: Load the listing page
@@ -470,27 +457,8 @@ async function runAgent(input: AgentInput): Promise<void> {
       const currentUrl = await page.evaluate<string>("window.location.href");
       console.log("[agent] After Buy It Now, on:", currentUrl);
 
-      // eBay may redirect to sign-in page if session isn't authenticated
-      const afterBinUrl = await page.evaluate<string>("window.location.href");
-      if (afterBinUrl.includes("signin.ebay.com") || afterBinUrl.includes("SignIn")) {
-        console.log("[agent] Buy It Now redirected to sign-in — logging in now...");
-        try {
-          await stagehand.act("type %email% into the email or username field", { variables: { email: process.env.EBAY_USERNAME! } });
-          await stagehand.act("click the Continue button");
-          await sleep(2500);
-          await stagehand.act("type %password% into the password field", { variables: { password: process.env.EBAY_PASSWORD! } });
-          await stagehand.act("click the Sign in button");
-          await sleep(4000);
-          const postLoginUrl = await page.evaluate<string>("window.location.href");
-          console.log("[agent] Signed in, navigated to:", postLoginUrl.split("?")[0]);
-        } catch (signInErr) {
-          console.warn("[agent] Sign-in at checkout failed — will try guest:", signInErr);
-        }
-      }
-
-      // eBay shows a modal or navigates after Buy It Now / sign-in.
-      // Logged-in: proceeds to checkout review automatically.
-      // Guest: "Check out as guest" / "Continue as guest".
+      // Guest checkout only — if eBay redirects to sign-in, skip it and proceed to guest option.
+      // eBay shows a modal or navigates after Buy It Now.
       console.log("[agent] Handling checkout modal...");
       try {
         await stagehand.act(
