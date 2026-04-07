@@ -990,6 +990,70 @@ def _lab_run_to_dict(r: LabRun) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scraper comparison endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ScraperCompareRequest(BaseModel):
+    query: str
+
+
+@app.post("/scraper-compare")
+def scraper_compare(req: ScraperCompareRequest):
+    """Run HTML and Apify scrapers in parallel and return side-by-side results."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import quote_plus
+    from newpoc.backend.monitor import _scrape_listings_apify, _scrape_listings_html
+
+    search_url = (
+        f"https://www.ebay.com/sch/i.html"
+        f"?_nkw={quote_plus(req.query)}&_sop=15&_ipg=50&LH_BIN=1"
+    )
+
+    def run_html():
+        t0 = time.time()
+        results = _scrape_listings_html(search_url, "BUY_IT_NOW")
+        return results, int((time.time() - t0) * 1000)
+
+    def run_apify():
+        t0 = time.time()
+        results = _scrape_listings_apify(search_url, "BUY_IT_NOW")
+        return results, int((time.time() - t0) * 1000)
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        html_f = ex.submit(run_html)
+        apify_f = ex.submit(run_apify)
+        html_results, html_ms = html_f.result()
+        apify_results, apify_ms = apify_f.result()
+
+    def summarize(results: list, elapsed_ms: int) -> dict:
+        prices = [r["price"] for r in results if r["price"] > 0]
+        return {
+            "count": len(results),
+            "time_ms": elapsed_ms,
+            "price_min": round(min(prices), 2) if prices else None,
+            "price_max": round(max(prices), 2) if prices else None,
+            "price_avg": round(sum(prices) / len(prices), 2) if prices else None,
+            "samples": [
+                {
+                    "title": r["title"][:80],
+                    "price": r["price"],
+                    "shipping": r["shipping"],
+                    "url": r["url"],
+                }
+                for r in results[:6]
+            ],
+        }
+
+    return {
+        "query": req.query,
+        "search_url": search_url,
+        "html": summarize(html_results, html_ms),
+        "apify": summarize(apify_results, apify_ms),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Static files — serve agent screenshots
 # Must be mounted AFTER all API routes
 # ─────────────────────────────────────────────────────────────────────────────

@@ -104,6 +104,29 @@ export interface LabMetrics {
   };
 }
 
+export interface ScraperSample {
+  title: string;
+  price: number;
+  shipping: number;
+  url: string;
+}
+
+export interface ScraperStats {
+  count: number;
+  time_ms: number;
+  price_min: number | null;
+  price_max: number | null;
+  price_avg: number | null;
+  samples: ScraperSample[];
+}
+
+export interface ScraperCompareResult {
+  query: string;
+  search_url: string;
+  html: ScraperStats;
+  apify: ScraperStats;
+}
+
 // ─── API functions ────────────────────────────────────────────────────────────
 
 export const api = {
@@ -129,4 +152,6 @@ export const api = {
       .then((r) => r.data),
   dealLogs: (deal_id: number) =>
     http.get<{ logs: string[] }>(`/deals/${deal_id}/logs`).then((r) => r.data.logs),
+  scraperCompare: (query: string) =>
+    http.post<ScraperCompareResult>("/scraper-compare", { query }).then((r) => r.data),
 };

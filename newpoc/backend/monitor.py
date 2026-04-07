@@ -17,6 +17,7 @@ Run:  uv run python -m newpoc.backend.monitor
 
 import json
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -43,6 +44,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 EBAY_SEARCH_BASE = "https://www.ebay.com/sch/i.html"
+APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN")
+APIFY_ACTOR = "delicious_zebu~ebay-product-listing-scraper"
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -84,16 +88,137 @@ def build_ebay_url(item: WantList, listing_type: str = "BUY_IT_NOW") -> str:
 
 def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[dict]:
     """
-    Scrape eBay search results and return a list of listing dicts.
-    Each dict has: title, price, shipping, seller_username,
-                   seller_rating, seller_feedback_count, url, listing_type.
-    Returns empty list on any error.
+    Scrape eBay search results via Apify actor (falls back to HTML scraping).
+    Returns list of dicts with: title, price, shipping, seller_username,
+    seller_rating, seller_feedback_count, url, listing_type.
     """
+    if APIFY_API_TOKEN:
+        results = _scrape_listings_apify(search_url, listing_type)
+        if results:
+            return results
+        logger.warning("[scraper] Apify returned 0 results, falling back to HTML scraper")
+
+    return _scrape_listings_html(search_url, listing_type)
+
+
+def _scrape_listings_apify(search_url: str, listing_type: str) -> list[dict]:
+    """Call Apify eBay Product Listing Scraper actor (async + poll for fresh results)."""
+    base = "https://api.apify.com/v2"
+    params = {"token": APIFY_API_TOKEN}
+
+    # Step 1 — start the run
+    try:
+        run_resp = requests.post(
+            f"{base}/acts/{APIFY_ACTOR}/runs",
+            params=params,
+            json={"listingUrls": [search_url]},
+            timeout=30,
+        )
+        run_resp.raise_for_status()
+        run_data = run_resp.json()["data"]
+        run_id = run_data["id"]
+        dataset_id = run_data["defaultDatasetId"]
+        logger.info(f"[scraper] Apify run started: {run_id}")
+    except Exception as exc:
+        logger.warning(f"[scraper] Apify start failed: {exc}")
+        return []
+
+    # Step 2 — poll until SUCCEEDED or terminal state (max 90s)
+    for attempt in range(18):
+        time.sleep(5)
+        try:
+            status_resp = requests.get(
+                f"{base}/actor-runs/{run_id}",
+                params=params,
+                timeout=15,
+            )
+            status = status_resp.json()["data"]["status"]
+            logger.info(f"[scraper] Apify run {run_id} status: {status}")
+            if status == "SUCCEEDED":
+                break
+            if status in ("FAILED", "TIMED-OUT", "ABORTED"):
+                logger.warning(f"[scraper] Apify run failed with status: {status}")
+                return []
+        except Exception as exc:
+            logger.warning(f"[scraper] Apify poll error: {exc}")
+    else:
+        logger.warning("[scraper] Apify run timed out after 90s")
+        return []
+
+    # Step 3 — fetch results from this run's dataset (not cached)
+    try:
+        items_resp = requests.get(
+            f"{base}/datasets/{dataset_id}/items",
+            params=params,
+            timeout=30,
+        )
+        items_resp.raise_for_status()
+        items = items_resp.json()
+    except Exception as exc:
+        logger.warning(f"[scraper] Apify dataset fetch failed: {exc}")
+        return []
+
+    results = []
+    for item in items:
+        try:
+            title = item.get("product_title", "").strip()
+            if not title or title.lower() == "shop on ebay":
+                continue
+
+            item_url = item.get("product_url", "").split("?")[0]
+            if not item_url or "/itm/" not in item_url:
+                continue
+
+            price_str = item.get("price", "").replace("$", "").replace(",", "").strip()
+            if " to " in price_str:
+                price_str = price_str.split(" to ")[0]
+            try:
+                price = float(price_str)
+            except ValueError:
+                continue
+
+            # Shipping lives inside card_attribute strings e.g. "Free shipping", "+$4.99 shipping"
+            shipping = 0.0
+            for attr in item.get("card_attribute", []):
+                attr_lower = attr.lower()
+                if "free" in attr_lower and ("shipping" in attr_lower or "delivery" in attr_lower):
+                    shipping = 0.0
+                    break
+                if "shipping" in attr_lower and "$" in attr:
+                    try:
+                        shipping = float(
+                            attr.replace("+", "").replace("$", "").split()[0]
+                        )
+                    except (ValueError, IndexError):
+                        pass
+                    break
+
+            results.append({
+                "title": title,
+                "price": price,
+                "shipping": shipping,
+                # Apify listing scraper doesn't return seller info — use safe defaults
+                "seller_username": "unknown",
+                "seller_rating": 99.0,
+                "seller_feedback_count": 100,
+                "url": item_url,
+                "listing_type": listing_type,
+            })
+        except Exception as exc:
+            logger.debug(f"[scraper] Apify item parse error: {exc}")
+            continue
+
+    logger.info(f"[scraper] Apify found {len(results)} {listing_type} listings")
+    return results
+
+
+def _scrape_listings_html(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[dict]:
+    """Fallback: scrape eBay search results directly from HTML."""
     try:
         resp = requests.get(search_url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
     except Exception as exc:
-        logger.warning(f"[scraper] Request failed: {exc}")
+        logger.warning(f"[scraper] HTML request failed: {exc}")
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -101,7 +226,6 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
 
     for item in soup.select(".s-item__wrapper"):
         try:
-            # Title
             title_el = item.select_one(".s-item__title")
             if not title_el:
                 continue
@@ -109,7 +233,6 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
             if title.lower() == "shop on ebay":
                 continue
 
-            # URL
             link_el = item.select_one(".s-item__link")
             if not link_el:
                 continue
@@ -117,12 +240,10 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
             if not item_url or "/itm/" not in item_url:
                 continue
 
-            # Price
             price_el = item.select_one(".s-item__price")
             if not price_el:
                 continue
             price_text = price_el.get_text(strip=True).replace("$", "").replace(",", "")
-            # Handle ranges like "10.00 to 20.00"
             if " to " in price_text:
                 price_text = price_text.split(" to ")[0]
             try:
@@ -130,7 +251,6 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
             except ValueError:
                 continue
 
-            # Shipping
             shipping = 0.0
             shipping_el = item.select_one(".s-item__shipping, .s-item__freeXDays")
             if shipping_el:
@@ -145,14 +265,12 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
                     except (ValueError, IndexError):
                         shipping = 0.0
 
-            # Seller info (best-effort — not always present in search results)
             seller_username = "unknown"
             seller_rating = 99.0
             seller_feedback_count = 100
             seller_el = item.select_one(".s-item__seller-info-text, .s-item__sellerInfo")
             if seller_el:
                 seller_text = seller_el.get_text(strip=True)
-                # Format: "seller_name (1234) 99.8%"
                 parts = seller_text.split()
                 if parts:
                     seller_username = parts[0].strip("()")
@@ -168,23 +286,21 @@ def scrape_listings(search_url: str, listing_type: str = "BUY_IT_NOW") -> list[d
                             except ValueError:
                                 pass
 
-            results.append(
-                {
-                    "title": title,
-                    "price": price,
-                    "shipping": shipping,
-                    "seller_username": seller_username,
-                    "seller_rating": seller_rating,
-                    "seller_feedback_count": seller_feedback_count,
-                    "url": item_url,
-                    "listing_type": listing_type,
-                }
-            )
+            results.append({
+                "title": title,
+                "price": price,
+                "shipping": shipping,
+                "seller_username": seller_username,
+                "seller_rating": seller_rating,
+                "seller_feedback_count": seller_feedback_count,
+                "url": item_url,
+                "listing_type": listing_type,
+            })
         except Exception as exc:
-            logger.debug(f"[scraper] Skipping item due to parse error: {exc}")
+            logger.debug(f"[scraper] HTML item parse error: {exc}")
             continue
 
-    logger.info(f"[scraper] Found {len(results)} {listing_type} listings")
+    logger.info(f"[scraper] HTML found {len(results)} {listing_type} listings")
     return results
 
 

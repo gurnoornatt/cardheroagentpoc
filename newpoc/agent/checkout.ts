@@ -117,7 +117,7 @@ const CONDUCTOR_URL = process.env.CONDUCTOR_URL
   ?? (process.env.PORT ? `http://localhost:${process.env.PORT}` : "http://localhost:8001");
 const RECEIPTS_DIR = path.join(__dirname, "../receipts");
 const AGENT_BUDGET = parseFloat(process.env.AGENT_BUDGET ?? "150.00");
-const MODEL_USED = "anthropic/claude-haiku-4-5-20251001";
+const MODEL_USED = "openai/gpt-4o-mini";
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -198,7 +198,7 @@ async function runAgent(input: AgentInput): Promise<void> {
   console.log(`[agent] CONDUCTOR_URL=${CONDUCTOR_URL}`);
 
   // Validate required env vars up front — loud failure beats silent crash
-  const required = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "GOOGLE_API_KEY"];
+  const required = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "OPENAI_API_KEY"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     const msg = `Missing required env vars: ${missing.join(", ")}`;

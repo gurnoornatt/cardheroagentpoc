@@ -11,8 +11,9 @@ import {
   ExternalLink,
   Terminal as TerminalIcon,
   ImageIcon,
+  FlaskConical,
 } from "lucide-react";
-import { api, type Deal, type LabRun } from "../lib/api";
+import { api, type Deal, type LabRun, type ScraperStats, type ScraperSample } from "../lib/api";
 import { cn, fmt$$, fmtMs, MODEL_COLORS, relativeTime } from "../lib/utils";
 
 // ─── Dark mode ───────────────────────────────────────────────────────────────
@@ -130,6 +131,207 @@ function AbCard({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Scraper Lab ──────────────────────────────────────────────────────────────
+
+function ScraperCard({
+  label,
+  tag,
+  color,
+  stats,
+  loading,
+}: {
+  label: string;
+  tag: string;
+  color: string;
+  stats: ScraperStats | null;
+  loading: boolean;
+}) {
+  return (
+    <div className="card space-y-3 flex-1 min-w-0">
+      <div className="flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+        <span className="text-sm font-semibold" style={{ color: "var(--text)" }}>{label}</span>
+        <span
+          className="text-xs px-1.5 py-0.5 rounded font-mono ml-auto"
+          style={{ background: "var(--canvas)", color: "var(--muted)" }}
+        >
+          {tag}
+        </span>
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+          <Loader size={12} className="animate-spin" />
+          Running…
+        </div>
+      )}
+
+      {!loading && stats && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Listings found" value={String(stats.count)} />
+            <Stat label="Time" value={`${(stats.time_ms / 1000).toFixed(1)}s`} />
+            <Stat label="Price range" value={stats.price_min != null ? `$${stats.price_min} – $${stats.price_max}` : "—"} />
+            <Stat label="Avg price" value={stats.price_avg != null ? `$${stats.price_avg}` : "—"} />
+          </div>
+          <div
+            className="text-xs font-semibold uppercase tracking-wider pt-1"
+            style={{ color: "var(--muted)" }}
+          >
+            Top listings
+          </div>
+          <div className="space-y-1.5">
+            {stats.samples.map((s: ScraperSample, i: number) => (
+              <a
+                key={i}
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-start justify-between gap-2 text-xs group"
+              >
+                <span
+                  className="truncate group-hover:underline leading-snug"
+                  style={{ color: "var(--text)" }}
+                >
+                  {s.title}
+                </span>
+                <span className="shrink-0 font-mono" style={{ color: "var(--muted)" }}>
+                  ${s.price}{s.shipping > 0 ? ` +$${s.shipping}` : " free ship"}
+                </span>
+              </a>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!loading && !stats && (
+        <p className="text-xs" style={{ color: "var(--muted)" }}>No results yet</p>
+      )}
+    </div>
+  );
+}
+
+function ScraperLab() {
+  const [query, setQuery] = useState("Charizard ex PSA 10 Obsidian Flames");
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ html: ScraperStats; apify: ScraperStats; search_url: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function runCompare() {
+    if (!query.trim()) return;
+    setRunning(true);
+    setResult(null);
+    setError(null);
+    try {
+      const data = await api.scraperCompare(query.trim());
+      setResult(data);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <FlaskConical size={15} style={{ color: "var(--muted)" }} />
+        <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+          Scraper Lab
+        </h2>
+        <span
+          className="text-xs px-1.5 py-0.5 rounded font-mono"
+          style={{ background: "var(--canvas)", color: "var(--muted)" }}
+        >
+          HTML vs Apify
+        </span>
+      </div>
+
+      <p className="text-xs" style={{ color: "var(--muted)" }}>
+        Compare the old raw HTML scraper against the new Apify actor. Type a card name and grade —
+        both scrapers hit the same eBay BIN search URL in parallel. Note: neither returns PSA cert
+        numbers (those are on individual listing pages, extracted by the agent).
+      </p>
+
+      <div className="flex gap-2">
+        <input
+          className="input-base flex-1"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !running && runCompare()}
+          placeholder="e.g. Umbreon VMAX PSA 10 Brilliant Stars"
+        />
+        <button
+          className="btn-primary shrink-0"
+          onClick={runCompare}
+          disabled={running || !query.trim()}
+        >
+          {running ? <Loader size={14} className="animate-spin" /> : "Compare"}
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-xs text-red-400">{error}</p>
+      )}
+
+      {(running || result) && (
+        <div className="flex gap-4 flex-col sm:flex-row">
+          <ScraperCard
+            label="HTML Scraper"
+            tag="old"
+            color="#6B7280"
+            stats={result?.html ?? null}
+            loading={running}
+          />
+          <ScraperCard
+            label="Apify Actor"
+            tag="new · $0.002/result"
+            color="#22c55e"
+            stats={result?.apify ?? null}
+            loading={running}
+          />
+        </div>
+      )}
+
+      {result && (
+        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+          <CheckCircle size={12} className="text-green-500" />
+          Both scrapers searched:&nbsp;
+          <a
+            href={result.search_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:underline truncate"
+          >
+            {result.search_url}
+          </a>
+        </div>
+      )}
+
+      {result && (
+        <div
+          className="rounded-xl p-3 space-y-1.5 border"
+          style={{ borderColor: "var(--border)", background: "var(--canvas)" }}
+        >
+          <p className="text-xs font-semibold" style={{ color: "var(--text)" }}>
+            What each scraper gets vs what the agent adds
+          </p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs" style={{ color: "var(--muted)" }}>
+            <span>✓ Listing title</span>
+            <span>✓ Agent: PSA cert #</span>
+            <span>✓ Buy-It-Now price</span>
+            <span>✓ Agent: price lock verify</span>
+            <span>✓ Shipping cost</span>
+            <span>✓ Agent: checkout walk</span>
+            <span>✗ Seller rating (Apify only HTML has it)</span>
+            <span>✗ PSA pop data (agent reads pop report)</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -685,6 +887,8 @@ export function Home() {
             </div>
           </div>
         )}
+        {/* ── Scraper Lab ───────────────────────────────────────────────────── */}
+        <ScraperLab />
       </main>
     </div>
   );
