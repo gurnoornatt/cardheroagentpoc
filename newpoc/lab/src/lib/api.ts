@@ -127,6 +127,52 @@ export interface ScraperCompareResult {
   apify: ScraperStats;
 }
 
+export interface DealHuntResult {
+  platform: string;
+  title: string;
+  price: number;
+  shipping: number;
+  landed_cost: number;
+  url: string;
+  image_url: string;
+  seller_username: string;
+  seller_rating: number;
+  seller_feedback_count: number;
+  watchman_score: number;
+  filter_passed: boolean;
+  filter_reason: string;
+}
+
+export interface DealHuntResponse {
+  results: DealHuntResult[];
+  total: number;
+  filtered_count: number;
+  platforms_queried: string[];
+}
+
+export interface CollectrWantListAddition {
+  want_list_id: number;
+  name: string;
+  grade: string;
+  max_price: number;
+  set_name: string | null;
+  is_active: boolean;
+}
+
+export interface CollectrImportResponse {
+  cards_found: number;
+  imported_count: number;
+  skipped_count: number;
+  want_list_additions: CollectrWantListAddition[];
+  skipped_details: Array<{ card: object; reason: string }>;
+}
+
+export interface VoiceSession {
+  client_secret: { value: string } | null;
+  expires_at: number | null;
+}
+
+
 // ─── API functions ────────────────────────────────────────────────────────────
 
 export const api = {
@@ -154,4 +200,13 @@ export const api = {
     http.get<{ logs: string[] }>(`/deals/${deal_id}/logs`).then((r) => r.data.logs),
   scraperCompare: (query: string) =>
     http.post<ScraperCompareResult>("/scraper-compare", { query }).then((r) => r.data),
+  dealHunt: (card_name: string, grade: string, max_price: number, platforms: string[]) =>
+    http
+      .post<DealHuntResponse>("/tools/deal-hunt", { card_name, grade, max_price, platforms })
+      .then((r) => r.data),
+  collectrImport: (showcase_url: string) =>
+    http
+      .post<CollectrImportResponse>("/integrations/collectr/import", { showcase_url })
+      .then((r) => r.data),
+  voiceSession: () => http.get<VoiceSession>("/voice/session").then((r) => r.data),
 };

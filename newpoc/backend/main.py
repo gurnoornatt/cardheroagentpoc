@@ -14,6 +14,7 @@ Port: 8001  (avoids collision with v1 on 8000)
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -154,6 +155,48 @@ class LabExtractRequest(BaseModel):
     model: str                          # OpenRouter model ID e.g. "google/gemini-3-flash-preview"
     ground_truth_cert: Optional[str] = None
     listing_text: Optional[str] = None  # if provided, skip scraping and use this directly
+
+
+class DealHuntRequest(BaseModel):
+    card_name: str
+    grade: str
+    max_price: float
+    platforms: list[str] = ["ebay"]
+
+
+class DealHuntResult(BaseModel):
+    platform: str
+    title: str
+    price: float
+    shipping: float
+    landed_cost: float
+    url: str
+    image_url: str = ""
+    seller_username: str
+    seller_rating: float
+    seller_feedback_count: int
+    watchman_score: float
+    filter_passed: bool
+    filter_reason: str
+
+
+class DealHuntResponse(BaseModel):
+    results: list[DealHuntResult]
+    total: int
+    filtered_count: int
+    platforms_queried: list[str]
+
+
+class CollectrImportRequest(BaseModel):
+    showcase_url: str
+
+
+class CollectrImportResponse(BaseModel):
+    cards_found: int
+    imported_count: int
+    skipped_count: int
+    want_list_additions: list[dict]
+    skipped_details: list[dict]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -721,6 +764,150 @@ def lab_metrics(db: Session = Depends(get_db)):
 AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../agent"))
 AB_MODELS = ["google/gemini-3-flash-preview", "openai/gpt-5-nano"]
 
+_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+_PROXY_URL = os.getenv("RESIDENTIAL_PROXY_URL", "")
+_PREFLIGHT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _fetch_listing_images_sync(url: str) -> dict | None:
+    """
+    GET eBay listing HTML via residential proxy, parse og: meta tags.
+    Returns {"price": float|None, "images": [url, ...]} or None on failure.
+    Uses requests (not httpx) for reliable proxy auth handling.
+    """
+    import requests as _requests
+    if not _PROXY_URL:
+        logger.warning("[preflight] RESIDENTIAL_PROXY_URL not set — skipping proxy fetch")
+        return None
+    proxies = {"http": _PROXY_URL, "https": _PROXY_URL}
+    try:
+        resp = _requests.get(url, headers=_PREFLIGHT_HEADERS, proxies=proxies, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.warning(f"[preflight] proxy fetch failed: {exc}")
+        return None
+
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # og:image is server-rendered — always present even on React pages
+    images = [
+        tag["content"]
+        for tag in soup.find_all("meta", property="og:image")
+        if tag.get("content", "").startswith("http")
+    ][:3]
+
+    # Price from og:price:amount or itemprop="price"
+    price: float | None = None
+    price_tag = soup.find("meta", property="og:price:amount") or soup.find("span", itemprop="price")
+    if price_tag:
+        try:
+            raw_price = price_tag.get("content") or ""
+            price = float(raw_price.replace(",", "").strip())
+        except (ValueError, AttributeError):
+            pass
+
+    logger.info(f"[preflight] fetched listing — images={len(images)} price={price}")
+    return {"price": price, "images": images}
+
+
+async def _fetch_listing_images(url: str) -> dict | None:
+    """Async wrapper — runs sync proxy fetch in a thread to avoid blocking the event loop."""
+    import asyncio
+    return await asyncio.to_thread(_fetch_listing_images_sync, url)
+
+
+async def _vision_cert_check(images: list[str]) -> str:
+    """
+    Call Gemini 2.0 Flash via OpenRouter with listing images.
+    Returns cert number string or "NOT_FOUND".
+    """
+    if not _OPENROUTER_KEY or not images:
+        return "NOT_FOUND"
+    for img_url in images:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {_OPENROUTER_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "google/gemini-2.0-flash-001",
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": img_url}},
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "This is a product photo from an eBay listing for a PSA-graded "
+                                        "Pokémon card. Find the PSA certification number on the yellow "
+                                        "slab label — typically an 8-digit number, sometimes prefixed "
+                                        "like 'POKE-12345678'. Return ONLY the cert number. "
+                                        "If not visible, return: NOT_FOUND"
+                                    ),
+                                },
+                            ],
+                        }],
+                        "max_tokens": 30,
+                    },
+                )
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            if raw and raw != "NOT_FOUND" and re.search(r"\d{6,}", raw):
+                return re.sub(r"[^A-Z0-9\-]", "", raw.upper())
+        except Exception as exc:
+            logger.warning(f"[preflight] vision cert error: {exc}")
+    return "NOT_FOUND"
+
+
+async def _phase1_preflight(
+    deal_id: int,
+    url: str,
+    max_price: float,
+    dry_run: bool,
+) -> None:
+    """
+    Phase 1: fetch listing data via residential proxy + run vision cert check.
+    Then spawn the Node agent (Phase 2) with pre-extracted cert + price.
+    The agent skips all Browserbase extraction and goes straight to checkout.
+    """
+    logger.info(f"[preflight] deal_id={deal_id} Phase 1 starting")
+
+    listing = await _fetch_listing_images(url)
+    price_locked: float | None = listing["price"] if listing else None
+    images: list[str] = listing["images"] if listing else []
+    verified_cert = await _vision_cert_check(images)
+
+    logger.info(
+        f"[preflight] deal_id={deal_id} "
+        f"price={price_locked} cert={verified_cert} images={len(images)}"
+    )
+
+    agent_input = json.dumps({
+        "deal_id": deal_id,
+        "url": url,
+        "max_allowed_price": max_price,
+        "expected_cert_prefix": "",
+        "dry_run": dry_run,
+        "verified_cert": verified_cert,
+        "price_locked": price_locked,
+    })
+    subprocess.Popen(
+        ["npx", "ts-node", "checkout.ts", agent_input],
+        cwd=AGENT_DIR,
+        stdout=None,
+        stderr=None,
+    )
+
 
 def _extraction_prompt(listing_text: str) -> str:
     return (
@@ -823,10 +1010,17 @@ def _validate_pipeline_request(payload: PipelineRunRequest, request: Request) ->
 
 
 @app.post("/pipeline/run", status_code=201)
-def run_pipeline(payload: PipelineRunRequest, request: Request, db: Session = Depends(get_db)):
+async def run_pipeline(
+    payload: PipelineRunRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     """
-    Create a deal and spawn the checkout agent as a background process.
-    Returns deal_id immediately — poll GET /deals/{id} for status.
+    Two-phase pipeline:
+      Phase 1 (BackgroundTask): fetch listing via residential proxy + vision cert check
+      Phase 2 (spawned by preflight): Node agent does checkout only — no extraction
+    Returns deal_id immediately; poll GET /deals/{id} for status.
     """
     _validate_pipeline_request(payload, request)
 
@@ -850,22 +1044,12 @@ def run_pipeline(payload: PipelineRunRequest, request: Request, db: Session = De
     db.commit()
     db.refresh(deal)
 
-    agent_input = json.dumps({
-        "deal_id": deal.id,
-        "url": payload.url,
-        "max_allowed_price": payload.max_price,
-        "expected_cert_prefix": "",
-        "dry_run": payload.dry_run,
-    })
-
-    subprocess.Popen(
-        ["npx", "ts-node", "checkout.ts", agent_input],
-        cwd=AGENT_DIR,
-        stdout=None,   # inherit Railway log stream
-        stderr=None,   # inherit Railway log stream — shows agent errors
+    background_tasks.add_task(
+        _phase1_preflight,
+        deal.id, payload.url, payload.max_price, payload.dry_run,
     )
 
-    logger.info(f"[pipeline/run] deal_id={deal.id} url={clean_url} max_price={payload.max_price}")
+    logger.info(f"[pipeline/run] deal_id={deal.id} url={clean_url} preflight queued")
     return {"deal_id": deal.id, "status": "ANALYZING"}
 
 
@@ -1050,6 +1234,144 @@ def scraper_compare(req: ScraperCompareRequest):
         "search_url": search_url,
         "html": summarize(html_results, html_ms),
         "apify": summarize(apify_results, apify_ms),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature: Multi-platform deal hunter
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post("/tools/deal-hunt", response_model=DealHuntResponse)
+def deal_hunt(req: DealHuntRequest):
+    """
+    On-demand multi-platform deal search. Agent-callable tool endpoint.
+    eBay is always active. Mercari/OfferUp/FB activate when PLATFORM_ACTORS are set.
+    """
+    from newpoc.backend.monitor import WantListProxy, run_waterfall, scrape_platform
+
+    valid_platforms = {"ebay", "mercari", "offerup", "fb_marketplace"}
+    platforms = [p for p in req.platforms if p in valid_platforms]
+    if not platforms:
+        raise HTTPException(status_code=400, detail="No valid platforms specified")
+
+    proxy = WantListProxy(max_price=req.max_price, name=req.card_name)
+    all_results: list[DealHuntResult] = []
+
+    for platform in platforms:
+        raw = scrape_platform(req.card_name, req.grade, platform)
+        for listing in raw:
+            passed, reason, enriched = run_waterfall(listing, proxy)
+            all_results.append(DealHuntResult(
+                platform=platform,
+                title=listing["title"],
+                price=listing["price"],
+                shipping=listing["shipping"],
+                landed_cost=enriched.get("landed_cost", listing["price"] + listing["shipping"]),
+                url=listing["url"],
+                image_url=listing.get("image_url", ""),
+                seller_username=listing["seller_username"],
+                seller_rating=listing["seller_rating"],
+                seller_feedback_count=listing["seller_feedback_count"],
+                watchman_score=enriched.get("watchman_score", 0.0),
+                filter_passed=passed,
+                filter_reason=reason,
+            ))
+
+    # Passed deals first, then ranked by watchman_score desc
+    all_results.sort(key=lambda r: (not r.filter_passed, -r.watchman_score))
+    filtered_count = sum(1 for r in all_results if r.filter_passed)
+
+    return DealHuntResponse(
+        results=all_results,
+        total=len(all_results),
+        filtered_count=filtered_count,
+        platforms_queried=platforms,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature: Collectr portfolio importer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post("/integrations/collectr/import", response_model=CollectrImportResponse)
+def collectr_import(req: CollectrImportRequest):
+    """
+    Import a public Collectr showcase profile into CardHero want_list.
+    Uses Browserbase + Stagehand to extract card data from the SPA page.
+    Blocking — can take 20-30s while Browserbase session runs.
+    """
+    from urllib.parse import urlparse
+    from newpoc.backend.integrations.collectr import import_cards_to_want_list, run_collectr_import
+
+    try:
+        parsed = urlparse(req.showcase_url)
+        if parsed.hostname != "app.getcollectr.com" or "/showcase/profile/" not in parsed.path:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=400,
+            detail="URL must be a Collectr showcase profile URL: https://app.getcollectr.com/showcase/profile/{uuid}",
+        )
+
+    try:
+        raw = run_collectr_import(req.showcase_url)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    cards = raw.get("cards", [])
+    result = import_cards_to_want_list(cards)
+
+    logger.info(
+        f"[collectr] import done — found={len(cards)} "
+        f"imported={len(result['imported'])} skipped={len(result['skipped'])}"
+    )
+    return CollectrImportResponse(
+        cards_found=len(cards),
+        imported_count=len(result["imported"]),
+        skipped_count=len(result["skipped"]),
+        want_list_additions=result["imported"],
+        skipped_details=result["skipped"],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature: Voice session relay (OpenAI Realtime API ephemeral key)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/voice/session")
+async def voice_session():
+    """
+    Create an OpenAI Realtime API ephemeral key (60s TTL).
+    Browser uses this to connect directly to OpenAI WebSocket —
+    the real OPENAI_API_KEY is never exposed to the frontend.
+    """
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if not openai_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/realtime/sessions",
+            headers={
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4o-realtime-preview-2024-12-17",
+                "voice": "alloy",
+            },
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"OpenAI session error: {resp.text[:300]}")
+
+    data = resp.json()
+    return {
+        "client_secret": data.get("client_secret"),
+        "expires_at": data.get("expires_at"),
     }
 
 

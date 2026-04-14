@@ -20,6 +20,7 @@ import logging
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
@@ -46,6 +47,22 @@ logger = logging.getLogger(__name__)
 EBAY_SEARCH_BASE = "https://www.ebay.com/sch/i.html"
 APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN")
 APIFY_ACTOR = "delicious_zebu~ebay-product-listing-scraper"
+
+# Multi-platform actor registry.
+# Set actor string when Apify paid plan is purchased; None = platform disabled (returns []).
+PLATFORM_ACTORS: dict[str, str | None] = {
+    "ebay":           APIFY_ACTOR,
+    "mercari":        None,   # "h4sh/mercari-scraper" — enable when paid plan purchased
+    "offerup":        None,   # "piotrv1001/offerup-listings-scraper"
+    "fb_marketplace": None,   # "apify/facebook-marketplace-scraper"
+}
+
+
+@dataclass
+class WantListProxy:
+    """Lightweight stand-in for WantList ORM used by deal-hunt endpoint."""
+    max_price: float
+    name: str = ""
 
 HEADERS = {
     "User-Agent": (
@@ -203,6 +220,7 @@ def _scrape_listings_apify(search_url: str, listing_type: str) -> list[dict]:
                 "seller_feedback_count": 100,
                 "url": item_url,
                 "listing_type": listing_type,
+                "image_url": item.get("image_url", ""),  # for Phase 1 vision cert
             })
         except Exception as exc:
             logger.debug(f"[scraper] Apify item parse error: {exc}")
@@ -302,6 +320,27 @@ def _scrape_listings_html(search_url: str, listing_type: str = "BUY_IT_NOW") -> 
 
     logger.info(f"[scraper] HTML found {len(results)} {listing_type} listings")
     return results
+
+
+def scrape_platform(card_name: str, grade: str, platform: str) -> list[dict]:
+    """
+    On-demand multi-platform scraper used by /tools/deal-hunt.
+    Returns raw listing dicts (same schema as Watchman scraper output).
+    Platforms with actor=None (not yet on paid Apify plan) return [].
+    """
+    if platform == "ebay":
+        query = quote_plus(f"{card_name} {grade}")
+        url = f"{EBAY_SEARCH_BASE}?_nkw={query}&_sop=15&_ipg=50&LH_BIN=1"
+        return scrape_listings(url, "BUY_IT_NOW")
+
+    actor = PLATFORM_ACTORS.get(platform)
+    if actor is None:
+        logger.info(f"[deal-hunt] platform={platform} not yet enabled (no Apify actor configured)")
+        return []
+
+    # Future: add platform-specific input builders here when paid plan is purchased.
+    # Mercari/OfferUp/FB accept different input JSON than eBay's listingUrls.
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -422,21 +461,66 @@ def post_evaluate(want_item: WantList, listing: dict) -> Optional[dict]:
         return None
 
 
-def trigger_agent(deal_id: int, url: str, max_price: float, cert_prefix: str) -> None:
+def _vision_cert_check_sync(images: list[str]) -> str:
+    """
+    Call Gemini 2.0 Flash via OpenRouter to extract PSA cert from listing photos.
+    Sync version for use in the Watchman poll loop.
+    Returns cert number string or "NOT_FOUND".
+    """
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not openrouter_key or not images:
+        return "NOT_FOUND"
+    for img_url in images:
+        try:
+            import re
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "google/gemini-2.0-flash-001",
+                    "messages": [{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": img_url}},
+                        {"type": "text", "text": (
+                            "PSA-graded Pokémon card eBay listing photo. "
+                            "Find the PSA cert number on the yellow slab label "
+                            "(8-digit number, optionally prefixed like 'POKE-12345678'). "
+                            "Return ONLY the cert number or NOT_FOUND."
+                        )},
+                    ]}],
+                    "max_tokens": 30,
+                },
+                timeout=20,
+            )
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            if raw and raw != "NOT_FOUND" and re.search(r"\d{6,}", raw):
+                return re.sub(r"[^A-Z0-9\-]", "", raw.upper())
+        except Exception as exc:
+            logger.warning(f"[watchman] vision cert error: {exc}")
+    return "NOT_FOUND"
+
+
+def trigger_agent(
+    deal_id: int,
+    url: str,
+    max_price: float,
+    cert_prefix: str,
+    verified_cert: str = "NOT_FOUND",
+    price_locked: Optional[float] = None,
+) -> None:
     """
     Spawn the Last-Mile agent as a subprocess.
-    cwd is set to newpoc/agent/ so ts-node resolves correctly.
+    Passes pre-extracted cert + price so agent skips Browserbase extraction.
     """
     agent_dir = Path(__file__).resolve().parent.parent / "agent"
-    args = json.dumps(
-        {
-            "deal_id": deal_id,
-            "url": url,
-            "max_allowed_price": max_price,
-            "expected_cert_prefix": cert_prefix or "",
-        }
-    )
-    logger.info(f"[watchman] Triggering agent: deal_id={deal_id}")
+    args = json.dumps({
+        "deal_id": deal_id,
+        "url": url,
+        "max_allowed_price": max_price,
+        "expected_cert_prefix": cert_prefix or "",
+        "verified_cert": verified_cert,
+        "price_locked": price_locked,
+    })
+    logger.info(f"[watchman] Triggering agent: deal_id={deal_id} cert={verified_cert}")
     subprocess.Popen(
         ["npx", "ts-node", "checkout.ts", args],
         cwd=str(agent_dir),
@@ -479,12 +563,17 @@ def poll_once() -> None:
                 response = post_evaluate(want_item, enriched)
                 if response and response.get("decision") == "GO":
                     deal_id = response["deal_id"]
-                    logger.info(f"[watchman] GO — triggering agent for deal_id={deal_id}")
+                    # Phase 1: run vision cert check before opening any browser
+                    image_url = enriched.get("image_url", "")
+                    verified_cert = _vision_cert_check_sync([image_url]) if image_url else "NOT_FOUND"
+                    logger.info(f"[watchman] GO deal_id={deal_id} cert={verified_cert}")
                     trigger_agent(
                         deal_id=deal_id,
                         url=listing["url"],
                         max_price=want_item.max_price,
                         cert_prefix=want_item.cert_prefix or "",
+                        verified_cert=verified_cert,
+                        price_locked=listing["price"],
                     )
 
             # ── Auction listings (price discovery only) ───────────────────────

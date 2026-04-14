@@ -1,9 +1,102 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TrendingUp, TrendingDown } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type CollectrImportResponse } from "../lib/api";
 import { fmt$$, cn } from "../lib/utils";
 
+function CollectrModal({ onClose }: { onClose: () => void }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<CollectrImportResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const qc = useQueryClient();
+
+  async function submit() {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.collectrImport(url.trim());
+      setResult(data);
+      qc.invalidateQueries({ queryKey: ["want-list"] });
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } }; message?: string })
+        ?.response?.data?.detail ?? String(err);
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6 space-y-4">
+        <h3 className="font-semibold text-gray-900">Import from Collectr</h3>
+        <p className="text-sm text-gray-500">
+          Paste a public Collectr showcase URL. PSA-graded cards will be added to your want list
+          at 80% of their current Collectr value.
+        </p>
+
+        {!result ? (
+          <>
+            <input
+              type="url"
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              placeholder="https://app.getcollectr.com/showcase/profile/..."
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              disabled={loading}
+            />
+            {error && <p className="text-xs text-red-600">{error}</p>}
+            {loading && (
+              <p className="text-xs text-gray-500 italic">
+                Opening Browserbase session to read your showcase… this takes 20–30s
+              </p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">
+                Cancel
+              </button>
+              <button
+                onClick={submit}
+                disabled={loading || !url.includes("getcollectr.com")}
+                className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {loading ? "Importing…" : "Import"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-lg bg-green-50 border border-green-200 px-4 py-3 space-y-1">
+              <p className="text-sm font-medium text-green-800">Import complete</p>
+              <p className="text-xs text-green-700">
+                {result.cards_found} cards found · {result.imported_count} added to want list · {result.skipped_count} skipped
+              </p>
+            </div>
+            {result.want_list_additions.length > 0 && (
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {result.want_list_additions.map((w, i) => (
+                  <div key={i} className="flex justify-between text-xs text-gray-700 border-t pt-1">
+                    <span>{w.name} <span className="text-gray-400">{w.grade}</span></span>
+                    <span className={w.is_active ? "text-gray-900" : "text-yellow-600"}>
+                      {w.max_price > 0 ? fmt$$(w.max_price) : "⚠ needs price"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={onClose} className="w-full rounded bg-gray-100 py-2 text-sm text-gray-700 hover:bg-gray-200">
+              Done
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function WantList() {
+  const [showImport, setShowImport] = useState(false);
   const { data: items = [], isLoading } = useQuery({
     queryKey: ["want-list"],
     queryFn: api.wantList,
@@ -12,9 +105,18 @@ export function WantList() {
 
   return (
     <div className="space-y-4">
+      {showImport && <CollectrModal onClose={() => setShowImport(false)} />}
       <div className="flex items-center justify-between">
         <h2 className="font-serif text-lg text-gray-900">Want List</h2>
-        <span className="text-sm text-muted">{items.length} active</span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowImport(true)}
+            className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 transition-colors"
+          >
+            Import from Collectr
+          </button>
+          <span className="text-sm text-muted">{items.length} active</span>
+        </div>
       </div>
 
       <div className="card p-0 overflow-hidden">

@@ -1,22 +1,30 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useMemo, useRef, useEffect, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   WifiOff,
   Sun,
   Moon,
   CheckCircle,
-  XCircle,
-  Clock,
   Loader,
   ExternalLink,
   Terminal as TerminalIcon,
-  ImageIcon,
   FlaskConical,
+  ChevronDown,
+  ChevronUp,
+  Activity,
+  Zap,
 } from "lucide-react";
-import { api, type Deal, type LabRun, type ScraperStats, type ScraperSample } from "../lib/api";
-import { cn, fmt$$, fmtMs, MODEL_COLORS, relativeTime } from "../lib/utils";
+import {
+  api,
+  type Deal,
+  type ScraperStats,
+  type ScraperSample,
+  type WantListItem,
+  type Health,
+} from "../lib/api";
+import { cn, fmt$$, relativeTime } from "../lib/utils";
 
-// ─── Dark mode ───────────────────────────────────────────────────────────────
+// ─── Dark mode hook ───────────────────────────────────────────────────────────
 
 function useDarkMode() {
   const [dark, setDark] = useState(() =>
@@ -31,29 +39,7 @@ function useDarkMode() {
   return { dark, toggle };
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const STEPS = [
-  { id: "submit",   label: "Submitting",       desc: "URL queued for processing" },
-  { id: "create",   label: "Deal created",      desc: "Pipeline accepted the listing" },
-  { id: "extract",  label: "Extracting",        desc: "Agent reading the eBay page via Browserbase" },
-  { id: "checkout", label: "Walking checkout",  desc: "Agent navigating to payment screen" },
-  { id: "ab",       label: "A/B comparison",    desc: "Both AI models extracted the same listing" },
-];
-
-function modelLabel(m: string): string {
-  const map: Record<string, string> = {
-    "google/gemini-3-flash-preview": "Gemini 3 Flash",
-    "google/gemini-2.5-flash": "Gemini 2.5 Flash",
-    "openai/gpt-5-nano": "GPT-5 Nano",
-    "anthropic/claude-sonnet-4-5": "Claude Sonnet",
-  };
-  return map[m] ?? m;
-}
-
-type Phase = "idle" | "running" | "done" | "error";
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Stat sub-component ───────────────────────────────────────────────────────
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -63,6 +49,8 @@ function Stat({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+
+// ─── StatusBadge sub-component ────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
@@ -78,64 +66,373 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function AbCard({
-  run,
-  certDiff,
-  priceDiff,
-}: {
-  run: LabRun;
-  certDiff: boolean;
-  priceDiff: boolean;
-}) {
-  const color = MODEL_COLORS[run.model] ?? "#6B7280";
+// ─── BudgetBar component ──────────────────────────────────────────────────────
+
+function BudgetBar({ health }: { health: Health | undefined }) {
+  if (!health) return null;
+
+  const pct =
+    health.daily_spend_limit > 0
+      ? (health.daily_spend_today / health.daily_spend_limit) * 100
+      : 0;
+
+  const fillColor =
+    pct < 60
+      ? "bg-green-500"
+      : pct < 85
+      ? "bg-amber-500"
+      : "bg-red-500";
+
   return (
-    <div
-      className="flex items-center gap-3 rounded-xl px-3 py-2.5 border transition-colors"
-      style={{ borderColor: "var(--border)", background: "var(--canvas)" }}
-    >
-      <div className="w-1.5 h-10 rounded-full shrink-0" style={{ backgroundColor: color }} />
-      <div className="flex-1 min-w-0 space-y-0.5">
-        <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
-          {modelLabel(run.model)}
-        </p>
-        <div className="flex gap-3 text-xs flex-wrap">
-          <span
-            className={cn(certDiff && "text-amber-400 font-semibold")}
-            style={!certDiff ? { color: "var(--muted)" } : undefined}
-          >
-            cert: {run.extracted_cert ?? "—"}
-          </span>
-          <span
-            className={cn(priceDiff && "text-amber-400 font-semibold")}
-            style={!priceDiff ? { color: "var(--muted)" } : undefined}
-          >
-            price: {run.extracted_price != null ? fmt$$(run.extracted_price) : "—"}
-          </span>
-        </div>
+    <div className="hidden sm:flex items-center gap-2">
+      <div
+        className="relative rounded-full overflow-hidden"
+        style={{ width: 96, height: 6, background: "var(--border)" }}
+      >
+        <div
+          className={cn("absolute inset-y-0 left-0 rounded-full transition-all", fillColor)}
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
       </div>
-      <div className="text-right shrink-0 space-y-0.5">
-        <div className="flex items-center gap-1.5 justify-end">
-          {run.cert_correct != null &&
-            (run.cert_correct ? (
-              <CheckCircle size={13} className="text-green-500" />
-            ) : (
-              <XCircle size={13} className="text-red-400" />
-            ))}
-          <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
-            {fmtMs(run.latency_ms)}
-          </span>
-        </div>
-        {run.cert_correct != null && (
-          <p className={cn("text-xs", run.cert_correct ? "text-green-500" : "text-red-400")}>
-            {run.cert_correct ? "match" : "mismatch"}
-          </p>
-        )}
-      </div>
+      <span className="text-xs" style={{ color: "var(--muted)" }}>
+        Budget · {fmt$$(health.budget_remaining)} left
+      </span>
     </div>
   );
 }
 
-// ─── Scraper Lab ──────────────────────────────────────────────────────────────
+// ─── DealLiveCard component ───────────────────────────────────────────────────
+
+const LIVE_STEPS = ["Created", "Extracting", "Checkout", "Done"];
+
+function deriveActiveStep(logs: string[], status: string): number {
+  if (status === "BOUGHT" || status === "REJECTED") return 3;
+  const combined = logs.join(" ").toLowerCase();
+  if (combined.includes("checkout") || combined.includes("confirm")) return 2;
+  if (combined.includes("navigat") || combined.includes("extract")) return 1;
+  return 0;
+}
+
+function DealLiveCard({
+  deal,
+  wantItem,
+}: {
+  deal: Deal;
+  wantItem: WantListItem | undefined;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [bbSessionUrl, setBbSessionUrl] = useState<string | null>(null);
+  const terminalRef = useRef<HTMLDivElement>(null);
+
+  const isAnalyzing = deal.status === "ANALYZING";
+
+  const { data: logsData } = useQuery({
+    queryKey: ["deal-logs", deal.id],
+    queryFn: async () => {
+      const fetched = await api.dealLogs(deal.id);
+      const bbLog = fetched.find((l) => l.startsWith("[BB_SESSION_URL]"));
+      if (bbLog) setBbSessionUrl(bbLog.replace("[BB_SESSION_URL] ", ""));
+      return fetched;
+    },
+    enabled: isAnalyzing,
+    refetchInterval: 2000,
+  });
+
+  const logs = logsData ?? [];
+  const visibleLogs = logs.filter((l) => !l.startsWith("[BB_SESSION_URL]"));
+  const activeStep = deriveActiveStep(logs, deal.status);
+
+  // Auto-scroll terminal
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [visibleLogs.length]);
+
+  const cardName = wantItem
+    ? `${wantItem.name} ${wantItem.grade}`
+    : deal.ebay_item_id
+    ? `eBay #${deal.ebay_item_id}`
+    : `Deal #${deal.id}`;
+
+  const maxPrice = wantItem?.max_price ?? null;
+
+  return (
+    <div
+      className="card p-0 overflow-hidden fade-up"
+      style={{ borderColor: "var(--border)" }}
+    >
+      {/* ── Card header ── */}
+      <div className="px-4 pt-4 pb-3 space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <StatusBadge status={deal.status} />
+            {isAnalyzing && (
+              <Loader size={12} className="text-blue-400 animate-spin" />
+            )}
+          </div>
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="p-1 rounded-lg transition-opacity hover:opacity-60"
+            aria-label={expanded ? "Collapse" : "Expand"}
+          >
+            {expanded ? (
+              <ChevronUp size={14} style={{ color: "var(--muted)" }} />
+            ) : (
+              <ChevronDown size={14} style={{ color: "var(--muted)" }} />
+            )}
+          </button>
+        </div>
+
+        <p
+          className="text-base font-semibold truncate"
+          style={{ color: "var(--text)" }}
+          title={cardName}
+        >
+          {cardName}
+        </p>
+
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs"
+          style={{ color: "var(--muted)" }}
+        >
+          <span className="font-mono font-semibold" style={{ color: "var(--text)" }}>
+            {fmt$$(deal.landed_cost)} landed
+          </span>
+          {maxPrice != null && <span>max {fmt$$(maxPrice)}</span>}
+          {deal.seller_username && <span>{deal.seller_username}</span>}
+          {deal.seller_rating != null && (
+            <span className="flex items-center gap-0.5">
+              ⭐ {deal.seller_rating.toFixed(1)}%
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Mini step dots ── */}
+      <div
+        className="px-4 py-2 flex items-center gap-0 border-t border-b"
+        style={{ borderColor: "var(--border)" }}
+      >
+        {LIVE_STEPS.map((label, i) => {
+          const isDone = i < activeStep;
+          const isActive = i === activeStep;
+          return (
+            <div key={label} className="flex items-center flex-1 last:flex-none">
+              <div className="flex flex-col items-center gap-0.5">
+                <div
+                  className={cn(
+                    "w-2 h-2 rounded-full border transition-colors",
+                    isDone
+                      ? "bg-green-500 border-green-500"
+                      : isActive
+                      ? "bg-blue-400 border-blue-400"
+                      : "border-zinc-400"
+                  )}
+                />
+                <span
+                  className={cn(
+                    "text-xs whitespace-nowrap",
+                    isDone
+                      ? "text-green-500"
+                      : isActive
+                      ? "text-blue-400"
+                      : ""
+                  )}
+                  style={!isDone && !isActive ? { color: "var(--muted)" } : undefined}
+                >
+                  {isActive && isAnalyzing && <Loader size={8} className="inline animate-spin mr-0.5" />}
+                  {label}
+                </span>
+              </div>
+              {i < LIVE_STEPS.length - 1 && (
+                <div
+                  className="flex-1 h-px mx-1 mb-3"
+                  style={{
+                    background: isDone ? "#22c55e" : "var(--border)",
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Expanded section ── */}
+      {expanded && (
+        <div className="space-y-0">
+          {/* Live browser iframe */}
+          {bbSessionUrl && isAnalyzing && (
+            <div>
+              <div
+                className="flex items-center gap-2 px-4 py-2 border-b"
+                style={{ borderColor: "var(--border)" }}
+              >
+                <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
+                  Live Browser Session
+                </span>
+                <a
+                  href={bbSessionUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto flex items-center gap-1 text-xs hover:underline"
+                  style={{ color: "var(--muted)" }}
+                >
+                  Full screen <ExternalLink size={10} />
+                </a>
+              </div>
+              <iframe
+                src={bbSessionUrl}
+                className="w-full"
+                style={{ height: 360, border: "none" }}
+                sandbox="allow-same-origin allow-scripts"
+                allow="clipboard-read; clipboard-write"
+                title={`Live session deal ${deal.id}`}
+              />
+            </div>
+          )}
+
+          {/* Agent logs terminal */}
+          <div className="px-4 pb-4 pt-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <TerminalIcon size={11} style={{ color: "var(--muted)" }} />
+              <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
+                Agent Logs
+              </span>
+              {deal.url && (
+                <a
+                  href={deal.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto flex items-center gap-1 text-xs hover:underline"
+                  style={{ color: "var(--muted)" }}
+                >
+                  eBay <ExternalLink size={9} />
+                </a>
+              )}
+            </div>
+            <div
+              className="terminal"
+              ref={terminalRef}
+              style={{ maxHeight: 160, minHeight: 60 }}
+            >
+              {visibleLogs.length === 0 ? (
+                <span style={{ opacity: 0.4 }}>Waiting for agent output…</span>
+              ) : (
+                visibleLogs.map((line, i) => (
+                  <div key={i} className="fade-up">
+                    {">"} {line}
+                  </div>
+                ))
+              )}
+              {isAnalyzing && <span className="cursor-blink" />}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── RunInput component ───────────────────────────────────────────────────────
+
+function RunInput({ onSuccess }: { onSuccess: () => void }) {
+  const [url, setUrl] = useState("");
+  const [maxPrice, setMaxPrice] = useState("500");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successDealId, setSuccessDealId] = useState<number | null>(null);
+
+  async function handleRun() {
+    const trimmed = url.trim();
+    if (!trimmed || !trimmed.includes("ebay.com/itm/")) {
+      setError("Paste a valid eBay listing URL (must contain /itm/)");
+      return;
+    }
+    const price = parseFloat(maxPrice);
+    if (!price || price <= 0) {
+      setError("Enter a valid max price");
+      return;
+    }
+
+    setError(null);
+    setSuccessDealId(null);
+    setLoading(true);
+
+    try {
+      const result = await api.runPipeline(trimmed, price);
+      setSuccessDealId(result.deal_id);
+      setUrl("");
+      onSuccess();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="card space-y-3">
+      <div>
+        <div className="flex items-center gap-2">
+          <Zap size={14} style={{ color: "var(--gold)" }} />
+          <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+            Test a Listing
+          </h2>
+          <span
+            className="text-xs px-1.5 py-0.5 rounded font-mono"
+            style={{ background: "var(--canvas)", color: "var(--muted)" }}
+          >
+            dry run — stops before paying
+          </span>
+        </div>
+        <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+          Paste any eBay listing URL to run it through the full pipeline — price check, seller check, PSA cert extraction — without actually buying.
+        </p>
+      </div>
+
+      <div className="flex gap-2 items-center flex-wrap sm:flex-nowrap">
+        <input
+          className="input-base flex-1 min-w-0"
+          type="url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !loading && handleRun()}
+          placeholder="https://www.ebay.com/itm/123456789"
+          disabled={loading}
+        />
+        <input
+          className="input-base"
+          style={{ width: 128 }}
+          type="number"
+          min="1"
+          value={maxPrice}
+          onChange={(e) => setMaxPrice(e.target.value)}
+          placeholder="Max $"
+          disabled={loading}
+        />
+        <button
+          className="btn-primary shrink-0"
+          onClick={handleRun}
+          disabled={loading || !url.trim()}
+        >
+          {loading ? <Loader size={14} className="animate-spin" /> : "Run"}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      {successDealId != null && (
+        <p className="text-xs text-green-500">
+          Deal #{successDealId} in flight — watch it above ↑
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── ScraperCard component ────────────────────────────────────────────────────
 
 function ScraperCard({
   label,
@@ -219,6 +516,8 @@ function ScraperCard({
   );
 }
 
+// ─── ScraperLab component ─────────────────────────────────────────────────────
+
 function ScraperLab() {
   const [query, setQuery] = useState("Charizard ex PSA 10 Obsidian Flames");
   const [running, setRunning] = useState(false);
@@ -242,24 +541,23 @@ function ScraperLab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <FlaskConical size={15} style={{ color: "var(--muted)" }} />
-        <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
-          Scraper Lab
-        </h2>
-        <span
-          className="text-xs px-1.5 py-0.5 rounded font-mono"
-          style={{ background: "var(--canvas)", color: "var(--muted)" }}
-        >
-          HTML vs Apify
-        </span>
+      <div>
+        <div className="flex items-center gap-2">
+          <FlaskConical size={15} style={{ color: "var(--muted)" }} />
+          <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+            Scraper Comparison
+          </h2>
+          <span
+            className="text-xs px-1.5 py-0.5 rounded font-mono"
+            style={{ background: "var(--canvas)", color: "var(--muted)" }}
+          >
+            dev tool
+          </span>
+        </div>
+        <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+          Test how the Watchman finds listings. Type a card + grade — it hits eBay two ways (direct HTML vs Apify) and shows which returns better results. This is how the Watchman works under the hood.
+        </p>
       </div>
-
-      <p className="text-xs" style={{ color: "var(--muted)" }}>
-        Compare the old raw HTML scraper against the new Apify actor. Type a card name and grade —
-        both scrapers hit the same eBay BIN search URL in parallel. Note: neither returns PSA cert
-        numbers (those are on individual listing pages, extracted by the agent).
-      </p>
 
       <div className="flex gap-2">
         <input
@@ -340,619 +638,299 @@ function ScraperLab() {
   );
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
+// ─── Home (main page) ─────────────────────────────────────────────────────────
+
+const HISTORY_TABS = ["ALL", "BOUGHT", "ANALYZING", "REJECTED", "PENDING"] as const;
+type HistoryTab = typeof HISTORY_TABS[number];
 
 export function Home() {
   const { dark, toggle: toggleDark } = useDarkMode();
+  const [historyTab, setHistoryTab] = useState<HistoryTab>("ALL");
 
-  const [url, setUrl] = useState("");
-  const [maxPrice, setMaxPrice] = useState("500");
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [dealId, setDealId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [activeStep, setActiveStep] = useState(0);
-  const [logs, setLogs] = useState<string[]>([]);
-  const [bbSessionUrl, setBbSessionUrl] = useState<string | null>(null);
-  const runStartedAt = useRef<number>(0);
-  const terminalRef = useRef<HTMLDivElement>(null);
+  // ── Data queries ──────────────────────────────────────────────────────────
 
-  // Health check
   const { data: health, isError: healthError } = useQuery({
     queryKey: ["health"],
     queryFn: api.health,
     refetchInterval: 5000,
     retry: false,
   });
-  const isOnline = !healthError && health?.status === "ok";
 
-  // Poll deal status while running
-  const { data: deal } = useQuery<Deal>({
-    queryKey: ["pipeline-deal", dealId],
-    queryFn: () => api.deal(dealId!),
-    enabled: phase === "running" && dealId != null,
-    refetchInterval: 2000,
-  });
-
-  // Poll A/B lab runs
-  const { data: allRuns = [] } = useQuery<LabRun[]>({
-    queryKey: ["lab-runs"],
-    queryFn: api.labRuns,
-    enabled: dealId != null,
-    refetchInterval: phase === "running" ? 4000 : false,
-  });
-  const abRuns = allRuns.filter((r) => r.deal_id === dealId);
-
-  // Poll agent logs while running; parse Browserbase live-view URL when it appears
-  useQuery({
-    queryKey: ["deal-logs", dealId],
-    queryFn: async () => {
-      const newLogs = await api.dealLogs(dealId!);
-      setLogs(newLogs);
-      const bbLog = newLogs.find((l) => l.startsWith("[BB_SESSION_URL]"));
-      if (bbLog) setBbSessionUrl(bbLog.replace("[BB_SESSION_URL] ", ""));
-      return newLogs;
-    },
-    enabled: phase === "running" && dealId != null,
-    refetchInterval: 2000,
-  });
-
-  // All deals for history table
-  const { data: allDeals = [] } = useQuery<Deal[]>({
+  const { data: allDeals = [], refetch: refetchDeals } = useQuery<Deal[]>({
     queryKey: ["deals"],
     queryFn: () => api.deals(),
-    refetchInterval: phase === "running" ? 5000 : 30000,
+    refetchInterval: 5000,
   });
 
-  // Auto-scroll terminal to bottom
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [logs]);
+  const { data: wantList = [] } = useQuery<WantListItem[]>({
+    queryKey: ["want-list"],
+    queryFn: api.wantList,
+    staleTime: 60_000,
+  });
 
-  // Advance step based on deal status; timeout after 5 min stuck in ANALYZING
-  useEffect(() => {
-    if (!deal) return;
-    if (deal.status === "ANALYZING") {
-      setActiveStep((prev) => Math.max(prev, 3));
-      if (runStartedAt.current && Date.now() - runStartedAt.current > 5 * 60 * 1000) {
-        setError("Agent timed out — deal is stuck in ANALYZING. Check Railway logs for errors.");
-        setPhase("error");
-      }
-    } else if (deal.status === "BOUGHT" || deal.status === "REJECTED") {
-      if (abRuns.length >= 2) {
-        setActiveStep(5);
-        setPhase("done");
-      } else {
-        setActiveStep((prev) => Math.max(prev, 4));
-      }
-    }
-  }, [deal?.status, abRuns.length]);
+  // ── Derived data ──────────────────────────────────────────────────────────
 
-  async function handleRun() {
-    const trimmed = url.trim();
-    if (!trimmed || !trimmed.includes("ebay.com/itm/")) {
-      setError("Paste a valid eBay listing URL (must contain /itm/)");
-      return;
-    }
-    const price = parseFloat(maxPrice);
-    if (!price || price <= 0) {
-      setError("Enter a valid max price");
-      return;
-    }
+  const wantMap = useMemo(
+    () => new Map(wantList.map((w) => [w.id, w])),
+    [wantList]
+  );
 
-    setError(null);
-    setPhase("running");
-    setActiveStep(0);
-    setDealId(null);
-    setLogs([]);
-    setBbSessionUrl(null);
-    runStartedAt.current = Date.now();
+  const analyzingDeals = allDeals.filter((d) => d.status === "ANALYZING");
 
-    try {
-      const result = await api.runPipeline(trimmed, price);
-      setDealId(result.deal_id);
-      setActiveStep(2); // submit + create both done; extract is active
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("error");
-    }
+  const spentToday = health?.daily_spend_today ?? 0;
+  const budgetLeft = health?.budget_remaining ?? 0;
+  const boughtToday = allDeals.filter((d) => d.status === "BOUGHT").length;
+
+  const isOnline = !healthError && health?.status === "ok";
+
+  const filteredDeals = useMemo(() => {
+    const sorted = allDeals.slice().reverse();
+    if (historyTab === "ALL") return sorted;
+    return sorted.filter((d) => d.status === historyTab);
+  }, [allDeals, historyTab]);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function dealCardName(deal: Deal): string {
+    const wi = wantMap.get(deal.want_list_id);
+    if (wi) return `${wi.name} ${wi.grade}`;
+    if (deal.ebay_item_id) return `eBay #${deal.ebay_item_id}`;
+    return `Deal #${deal.id}`;
   }
 
-  function handleReset() {
-    setPhase("idle");
-    setDealId(null);
-    setActiveStep(0);
-    setError(null);
-    setUrl("");
-    setLogs([]);
-  }
-
-  const rejectionReason = (() => {
-    if (!deal?.audit_log?.agent_extraction_json) return null;
-    try {
-      return JSON.parse(deal.audit_log.agent_extraction_json)._rejection_reason ?? null;
-    } catch {
-      return null;
+  function outcomeCell(deal: Deal): ReactNode {
+    if (deal.status === "BOUGHT" && deal.audit_log?.verified_cert) {
+      return (
+        <span className="font-mono text-green-500 text-xs">
+          {deal.audit_log.verified_cert}
+        </span>
+      );
     }
-  })();
-
-  const screenshotUrl = (() => {
-    const p = deal?.audit_log?.screenshot_path;
-    if (!p) return null;
-    const filename = p.split("/").pop();
-    return filename ? `/receipts/${filename}` : null;
-  })();
-
-  const certsDiffer =
-    abRuns.length >= 2 && abRuns[0].extracted_cert !== abRuns[1].extracted_cert;
-  const pricesDiffer =
-    abRuns.length >= 2 &&
-    Math.abs((abRuns[0].extracted_price ?? 0) - (abRuns[1].extracted_price ?? 0)) > 0.01;
-
-  function safeItemId(rawUrl: string): string {
-    try {
-      return new URL(rawUrl).pathname.split("/")[2] ?? rawUrl;
-    } catch {
-      return rawUrl;
+    if (deal.status === "REJECTED" && deal.audit_log?.agent_extraction_json) {
+      try {
+        const reason =
+          JSON.parse(deal.audit_log.agent_extraction_json)._rejection_reason;
+        if (reason)
+          return (
+            <span className="text-xs text-red-400">{reason}</span>
+          );
+      } catch {
+        // fall through
+      }
     }
+    return <span style={{ color: "var(--muted)" }}>—</span>;
   }
 
   return (
     <div className="min-h-screen" style={{ background: "var(--canvas)" }}>
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header
-        className="sticky top-0 z-20 border-b"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
-            <span className="font-serif text-xl" style={{ color: "var(--text)" }}>
-              CardHero
-            </span>
-            <span
-              className="text-xs px-2 py-0.5 rounded font-mono"
-              style={{ background: "var(--canvas)", color: "var(--muted)" }}
-            >
-              POC
-            </span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Live / offline indicator */}
-            <span
-              className={cn(
-                "flex items-center gap-1.5 text-xs font-medium",
-                isOnline ? "text-green-500" : "text-red-500"
-              )}
-            >
-              {isOnline ? (
-                <>
-                  <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-                  Live
-                </>
-              ) : (
-                <>
-                  <WifiOff size={12} />
-                  Offline
-                </>
-              )}
-            </span>
-
-            {/* Dark mode toggle */}
-            <button
-              onClick={toggleDark}
-              className="p-1.5 rounded-lg transition-colors hover:opacity-70"
-              aria-label="Toggle dark mode"
-            >
-              {dark ? (
-                <Sun size={16} style={{ color: "var(--muted)" }} />
-              ) : (
-                <Moon size={16} style={{ color: "var(--muted)" }} />
-              )}
-            </button>
-          </div>
-        </div>
-      </header>
 
       <main className="max-w-6xl mx-auto px-5 py-8 space-y-8">
-        {/* ── Hero ─────────────────────────────────────────────────────────── */}
-        <div>
-          <h1 className="text-2xl font-serif" style={{ color: "var(--text)" }}>
-            PSA Card Deal Hunter
-          </h1>
-          <p className="text-sm mt-1" style={{ color: "var(--muted)" }}>
-            Paste any eBay listing — the agent reads, verifies, and walks checkout in a real
-            cloud browser. Two AI models extract independently so you can compare accuracy.
-          </p>
+
+        {/* ── How it works banner ───────────────────────────────────────────── */}
+        <div
+          className="rounded-xl border p-4 space-y-2"
+          style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+        >
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <p className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+              How CardHero works
+            </p>
+            <div className="flex items-center gap-3 flex-wrap text-xs" style={{ color: "var(--muted)" }}>
+              <BudgetBar health={health} />
+              <span
+                className={cn(
+                  "flex items-center gap-1.5 font-medium",
+                  isOnline ? "text-green-500" : "text-red-500"
+                )}
+              >
+                {isOnline ? (
+                  <><span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />Live</>
+                ) : (
+                  <><WifiOff size={12} />Offline</>
+                )}
+              </span>
+              <button onClick={toggleDark} className="p-1 rounded hover:opacity-70" aria-label="Toggle dark mode">
+                {dark ? <Sun size={14} style={{ color: "var(--muted)" }} /> : <Moon size={14} style={{ color: "var(--muted)" }} />}
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs flex-wrap" style={{ color: "var(--muted)" }}>
+            <span className="rounded px-2 py-0.5 font-medium" style={{ background: "var(--canvas)", color: "var(--text)" }}>1. Watchman</span>
+            <span>scans eBay every few minutes for PSA-graded cards on your want list</span>
+            <span className="opacity-40">→</span>
+            <span className="rounded px-2 py-0.5 font-medium" style={{ background: "var(--canvas)", color: "var(--text)" }}>2. Filter</span>
+            <span>checks price, seller quality, and title for fakes</span>
+            <span className="opacity-40">→</span>
+            <span className="rounded px-2 py-0.5 font-medium" style={{ background: "var(--canvas)", color: "var(--text)" }}>3. Agent</span>
+            <span>opens a real browser, verifies the PSA cert, and checks out</span>
+          </div>
         </div>
 
-        {/* ── Idle: input form ─────────────────────────────────────────────── */}
-        {phase === "idle" && (
-          <div className="card max-w-2xl space-y-4 fade-up">
-            <div className="space-y-3">
-              <div>
-                <label
-                  className="block text-xs font-medium mb-1.5"
-                  style={{ color: "var(--muted)" }}
-                >
-                  eBay Listing URL
-                </label>
-                <input
-                  className="input-base"
-                  type="url"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://www.ebay.com/itm/123456789"
-                  onKeyDown={(e) => e.key === "Enter" && handleRun()}
-                />
-              </div>
-              <div>
-                <label
-                  className="block text-xs font-medium mb-1.5"
-                  style={{ color: "var(--muted)" }}
-                >
-                  Max Price (USD)
-                </label>
-                <input
-                  className="input-base"
-                  style={{ maxWidth: "9rem" }}
-                  type="number"
-                  min="1"
-                  value={maxPrice}
-                  onChange={(e) => setMaxPrice(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {error && <p className="text-xs text-red-500">{error}</p>}
-
-            <div className="flex items-center gap-4 flex-wrap">
-              <button className="btn-primary" onClick={handleRun}>
-                Run Pipeline
-              </button>
-              <p className="text-xs" style={{ color: "var(--muted)" }}>
-                Dry run — stops before "Confirm and pay"
+        {/* ── Stats row ─────────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "Spent today", value: fmt$$(spentToday), tip: "Total of all BOUGHT deals today" },
+            { label: "Budget left", value: fmt$$(budgetLeft), tip: "Daily limit minus spent" },
+            {
+              label: "Agents running",
+              value: String(analyzingDeals.length),
+              highlight: analyzingDeals.length > 0,
+              tip: "Browser agents currently buying",
+            },
+            { label: "Bought today", value: String(boughtToday), tip: "Deals completed today" },
+          ].map(({ label, value, highlight, tip }) => (
+            <div
+              key={label}
+              className="card py-3 px-4"
+              title={tip}
+            >
+              <p className="text-xs mb-1" style={{ color: "var(--muted)" }}>
+                {label}
+              </p>
+              <p
+                className={cn(
+                  "text-2xl font-mono font-semibold",
+                  highlight ? "text-blue-400" : ""
+                )}
+                style={!highlight ? { color: "var(--text)" } : undefined}
+              >
+                {value}
               </p>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
 
-        {/* ── Error state ─────────────────────────────────────────────────── */}
-        {phase === "error" && (
-          <div className="card max-w-2xl space-y-3 fade-up">
-            <p className="text-sm text-red-500">{error}</p>
-            <button className="btn-primary" onClick={handleReset}>
-              Try again
-            </button>
-          </div>
-        )}
-
-        {/* ── Running / Done: two-column layout ───────────────────────────── */}
-        {(phase === "running" || phase === "done") && (
-          <div className="grid lg:grid-cols-2 gap-6 items-start">
-            {/* Left: steps + terminal + outcome */}
-            <div className="space-y-4">
-              {/* Step progress */}
-              <div className="card p-0 overflow-hidden">
-                {STEPS.map((step, i) => {
-                  const done = i < activeStep;
-                  const active = i === activeStep;
-                  return (
-                    <div
-                      key={step.id}
-                      className={cn(
-                        "flex items-start gap-3 px-4 py-3 border-b last:border-b-0 transition-colors",
-                        active && "bg-blue-500/5"
-                      )}
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      <div className="mt-0.5 shrink-0">
-                        {done ? (
-                          <CheckCircle size={16} className="text-green-500" />
-                        ) : active ? (
-                          <Loader size={16} className="text-blue-400 animate-spin" />
-                        ) : (
-                          <Clock size={16} style={{ color: "var(--border)" }} />
-                        )}
-                      </div>
-                      <div>
-                        <p
-                          className={cn("text-sm font-medium", active && "text-blue-400")}
-                          style={!active ? { color: done ? "var(--text)" : "var(--muted)" } : undefined}
-                        >
-                          {step.label}
-                        </p>
-                        <p className="text-xs" style={{ color: "var(--muted)" }}>
-                          {step.desc}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Terminal logs */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <TerminalIcon size={13} style={{ color: "var(--muted)" }} />
-                  <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                    Agent Logs
-                  </span>
-                </div>
-                <div className="terminal" ref={terminalRef}>
-                  {logs.length === 0 ? (
-                    <span style={{ opacity: 0.4 }}>Waiting for agent output...</span>
-                  ) : (
-                    logs
-                      .filter((l) => !l.startsWith("[BB_SESSION_URL]"))
-                      .map((line, i) => (
-                        <div key={i} className="fade-up">
-                          {">"} {line}
-                        </div>
-                      ))
-                  )}
-                  {phase === "running" && <span className="cursor-blink" />}
-                </div>
-              </div>
-
-              {/* Outcome banner */}
-              {deal && deal.status !== "ANALYZING" && (
-                <div
-                  className={cn(
-                    "rounded-xl px-4 py-3 text-sm border fade-up",
-                    deal.status === "BOUGHT"
-                      ? "bg-green-500/10 border-green-500/30 text-green-500"
-                      : "bg-red-500/10 border-red-500/30 text-red-400"
-                  )}
-                >
-                  {deal.status === "BOUGHT"
-                    ? "Checkout reached — stopped before Confirm and pay (dry run)."
-                    : rejectionReason
-                    ? `Rejected: ${rejectionReason}`
-                    : "Pipeline finished."}
-                </div>
-              )}
-
-              {phase === "done" && (
-                <button
-                  onClick={handleReset}
-                  className="text-sm hover:underline transition-opacity hover:opacity-70"
-                  style={{ color: "var(--gold)" }}
-                >
-                  Run another listing
-                </button>
-              )}
-            </div>
-
-            {/* Right: extraction data + screenshot + A/B */}
-            <div className="space-y-4">
-              {/* Extraction stats */}
-              {deal?.audit_log && (
-                <div className="card fade-up">
-                  <p
-                    className="text-xs font-semibold uppercase tracking-wider mb-3"
-                    style={{ color: "var(--muted)" }}
-                  >
-                    Extraction
-                  </p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <Stat label="PSA Cert" value={deal.audit_log.verified_cert ?? "—"} />
-                    <Stat label="Price locked" value={fmt$$(deal.audit_log.price_locked)} />
-                    <Stat
-                      label="Pop (10 / Total)"
-                      value={`${deal.audit_log.psa_pop_grade10 ?? "?"} / ${deal.audit_log.psa_pop_total ?? "?"}`}
-                    />
-                    <Stat
-                      label="Auth Guarantee"
-                      value={
-                        deal.audit_log.authenticity_guaranteed == null
-                          ? "—"
-                          : deal.audit_log.authenticity_guaranteed
-                          ? "Yes"
-                          : "No"
-                      }
-                    />
-                  </div>
-                  {deal.url && (
-                    <a
-                      href={deal.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-3 flex items-center gap-1 text-xs hover:underline"
-                      style={{ color: "var(--muted)" }}
-                    >
-                      <ExternalLink size={11} /> View on eBay
-                    </a>
-                  )}
-                </div>
-              )}
-
-              {/* Browserbase live view — iframe embed while session is RUNNING */}
-              {bbSessionUrl && phase === "running" && (
-                <div className="card p-0 overflow-hidden fade-up">
-                  <div
-                    className="flex items-center gap-2 px-4 py-2.5 border-b"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <span className="live-dot w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-                    <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                      Live Browser Session
-                    </span>
-                    <a
-                      href={bbSessionUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="ml-auto flex items-center gap-1 text-xs hover:underline"
-                      style={{ color: "var(--muted)" }}
-                    >
-                      Full screen <ExternalLink size={11} />
-                    </a>
-                  </div>
-                  <iframe
-                    src={bbSessionUrl}
-                    className="w-full"
-                    style={{ height: "480px", border: "none" }}
-                    sandbox="allow-same-origin allow-scripts"
-                    allow="clipboard-read; clipboard-write"
-                    title="Browserbase live session"
-                  />
-                </div>
-              )}
-
-              {/* After session ends — link to Browserbase dashboard for recording */}
-              {bbSessionUrl && phase !== "running" && (
-                <a
-                  href="https://www.browserbase.com/sessions"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="card flex items-center gap-3 fade-up hover:opacity-80 transition-opacity"
-                  style={{ textDecoration: "none" }}
-                >
-                  <span className="w-2 h-2 rounded-full bg-zinc-500 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold" style={{ color: "var(--text)" }}>
-                      Watch session recording →
-                    </p>
-                    <p className="text-xs" style={{ color: "var(--muted)" }}>
-                      browserbase.com/sessions — find the most recent run
-                    </p>
-                  </div>
-                  <ExternalLink size={14} style={{ color: "var(--muted)" }} />
-                </a>
-              )}
-
-              {/* Screenshot */}
-              {screenshotUrl && (
-                <div className="card p-0 overflow-hidden fade-up">
-                  <div
-                    className="flex items-center gap-2 px-4 py-2.5 border-b"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <ImageIcon size={13} style={{ color: "var(--muted)" }} />
-                    <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                      Checkout screenshot
-                    </span>
-                    <a
-                      href={screenshotUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="ml-auto"
-                    >
-                      <ExternalLink size={12} style={{ color: "var(--muted)" }} />
-                    </a>
-                  </div>
-                  <img
-                    src={screenshotUrl}
-                    alt="Checkout screenshot"
-                    className="w-full object-cover max-h-80"
-                  />
-                </div>
-              )}
-
-              {/* A/B model comparison */}
-              {abRuns.length > 0 && (
-                <div className="card fade-up space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p
-                      className="text-xs font-semibold uppercase tracking-wider"
-                      style={{ color: "var(--muted)" }}
-                    >
-                      Model Comparison
-                    </p>
-                    {abRuns.length < 2 && phase === "running" && (
-                      <span
-                        className="flex items-center gap-1 text-xs"
-                        style={{ color: "var(--muted)" }}
-                      >
-                        <Loader size={11} className="animate-spin" /> Waiting for 2nd model...
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    {abRuns.map((run) => (
-                      <AbCard
-                        key={run.id}
-                        run={run}
-                        certDiff={certsDiffer}
-                        priceDiff={pricesDiffer}
-                      />
-                    ))}
-                  </div>
-
-                  {abRuns.length >= 2 && !certsDiffer && !pricesDiffer && (
-                    <p className="text-xs text-green-500 flex items-center gap-1">
-                      <CheckCircle size={12} /> Both models agree on cert and price.
-                    </p>
-                  )}
-                  {abRuns.length >= 2 && (certsDiffer || pricesDiffer) && (
-                    <p className="text-xs text-amber-400 flex items-center gap-1">
-                      <XCircle size={12} /> Models disagree — highlighted fields differ.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── History table ─────────────────────────────────────────────────── */}
-        {allDeals.length > 0 && (
+        {/* ── Live Agents ───────────────────────────────────────────────────── */}
+        <div className="space-y-4">
           <div>
-            <h2 className="text-sm font-semibold mb-3" style={{ color: "var(--text)" }}>
-              Run History
-            </h2>
+            <div className="flex items-center gap-2">
+              <Activity size={15} style={{ color: "var(--muted)" }} />
+              <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
+                Live Agents
+              </h2>
+              {analyzingDeals.length > 0 && (
+                <span className="badge bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                  {analyzingDeals.length} running
+                </span>
+              )}
+            </div>
+            <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+              When the Watchman finds a deal that passes all filters, it launches a browser agent here. You can watch it live.
+            </p>
+          </div>
+
+          {analyzingDeals.length === 0 ? (
+            <div
+              className="card flex items-center gap-3 py-6 justify-center"
+              style={{ borderStyle: "dashed" }}
+            >
+              <Loader size={14} style={{ color: "var(--muted)" }} />
+              <p className="text-sm" style={{ color: "var(--muted)" }}>
+                No agents running — Watchman is scanning eBay in the background…
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {analyzingDeals.map((deal) => (
+                <DealLiveCard
+                  key={deal.id}
+                  deal={deal}
+                  wantItem={wantMap.get(deal.want_list_id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Run a Test ────────────────────────────────────────────────────── */}
+        <RunInput onSuccess={() => refetchDeals()} />
+
+        {/* ── Deal History ──────────────────────────────────────────────────── */}
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>Deal History</h2>
+            <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+              Every listing the Watchman has evaluated. PENDING = queued, ANALYZING = agent running, BOUGHT = purchased, REJECTED = failed cert/price check.
+            </p>
+          </div>
+
+          {/* Filter tabs */}
+          <div className="flex gap-1 flex-wrap">
+            {HISTORY_TABS.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setHistoryTab(tab)}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                  historyTab === tab
+                    ? "text-white"
+                    : "hover:opacity-70"
+                )}
+                style={
+                  historyTab === tab
+                    ? { background: "var(--gold)" }
+                    : {
+                        background: "var(--canvas)",
+                        color: "var(--muted)",
+                        border: "1px solid var(--border)",
+                      }
+                }
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          {filteredDeals.length === 0 ? (
+            <p className="text-xs py-4" style={{ color: "var(--muted)" }}>
+              No deals match this filter.
+            </p>
+          ) : (
             <div className="card p-0 overflow-hidden overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b" style={{ borderColor: "var(--border)" }}>
-                    <th className="table-th">ID</th>
-                    <th className="table-th">Item</th>
+                    <th className="table-th">Card</th>
                     <th className="table-th">Price</th>
                     <th className="table-th">Status</th>
-                    <th className="table-th">PSA Cert</th>
+                    <th className="table-th">Outcome</th>
                     <th className="table-th">When</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {allDeals
-                    .slice()
-                    .reverse()
-                    .map((d) => (
-                      <tr key={d.id} className="table-row">
-                        <td className="table-td font-mono text-xs">#{d.id}</td>
-                        <td className="table-td">
-                          <a
-                            href={d.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1 text-xs hover:underline max-w-[180px] truncate"
-                            style={{ color: "var(--muted)" }}
-                          >
-                            {safeItemId(d.url)}
-                            <ExternalLink size={10} className="shrink-0" />
-                          </a>
-                        </td>
-                        <td className="table-td font-mono text-xs">{fmt$$(d.price)}</td>
-                        <td className="table-td">
-                          <StatusBadge status={d.status} />
-                        </td>
-                        <td className="table-td font-mono text-xs">
-                          {d.audit_log?.verified_cert ?? "—"}
-                        </td>
-                        <td className="table-td text-xs" style={{ color: "var(--muted)" }}>
-                          {relativeTime(d.created_at)}
-                        </td>
-                      </tr>
-                    ))}
+                  {filteredDeals.map((d) => (
+                    <tr key={d.id} className="table-row">
+                      <td className="table-td">
+                        <a
+                          href={d.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-xs hover:underline max-w-[220px] truncate"
+                          style={{ color: "var(--text)" }}
+                        >
+                          {dealCardName(d)}
+                          <ExternalLink size={10} className="shrink-0" style={{ color: "var(--muted)" }} />
+                        </a>
+                      </td>
+                      <td className="table-td font-mono text-xs">{fmt$$(d.price)}</td>
+                      <td className="table-td">
+                        <StatusBadge status={d.status} />
+                      </td>
+                      <td className="table-td">{outcomeCell(d)}</td>
+                      <td className="table-td text-xs" style={{ color: "var(--muted)" }}>
+                        {relativeTime(d.created_at)}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+
         {/* ── Scraper Lab ───────────────────────────────────────────────────── */}
         <ScraperLab />
+
       </main>
     </div>
   );

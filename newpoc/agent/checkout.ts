@@ -37,7 +37,9 @@ interface AgentInput {
   url: string;
   max_allowed_price: number;
   expected_cert_prefix: string;
-  dry_run?: boolean; // stops before "Confirm and pay", skips conductor report
+  dry_run?: boolean;        // stops before "Confirm and pay"
+  verified_cert?: string;   // from Phase 1 Python preflight — skips in-agent extraction
+  price_locked?: number;    // from Phase 1 Python preflight — skips stagehand.extract()
 }
 
 interface AgentResult {
@@ -161,15 +163,6 @@ function buildProxyConfig(): { server: string; username: string; password: strin
   };
 }
 
-function extractionValid(e: Listing): boolean {
-  return (
-    e.price > 0 &&
-    e.title !== "null" &&
-    e.title !== "NOT_FOUND" &&
-    e.title.length > 3
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main agent flow
 // ---------------------------------------------------------------------------
@@ -283,60 +276,58 @@ async function runAgent(input: AgentInput): Promise<void> {
     // Stagehand v3: page accessed via stagehand.context.pages()[0]
     const page = stagehand.context.pages()[0];
 
-    // Step 0: Skipped — always use guest checkout (sub-$5k listings only)
-
     // -----------------------------------------------------------------------
     // Step 1: Load the listing page
     // -----------------------------------------------------------------------
     const cleanUrl = input.url.split("?")[0];
     await postLog(input.deal_id, `Loading eBay listing...`);
     await page.goto(cleanUrl, { waitUntil: "domcontentloaded", timeoutMs: 45000 });
-    await sleep(3000);  // Wait for eBay React bundles to finish rendering
-    await postLog(input.deal_id, "Page loaded — extracting PSA data...");
-    console.log("[agent] Page settled — extracting listing data...");
+    await sleep(2000);
 
     // -----------------------------------------------------------------------
-    // Step 2: Extract — retry once if price comes back as -1 (not yet rendered)
+    // Step 2: Extraction — use Phase 1 preflight data if available, else extract
     // -----------------------------------------------------------------------
-    const extractStart = Date.now();
+    const hasPreflight =
+      typeof input.verified_cert === "string" &&
+      input.verified_cert !== "NOT_FOUND" &&
+      typeof input.price_locked === "number" &&
+      input.price_locked > 0;
 
-    // Cast schema to any: Zod v3 + StagehandZodSchema causes "excessively deep" inference
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let extracted: Listing = (await stagehand.extract(
-      "Look at this eBay listing page and extract: " +
-        "(1) the PSA certification number shown anywhere on the page — usually an 8-digit number near 'PSA' text, item specifics, or in the card description, " +
-        "(2) the Buy It Now price — the large dollar amount near the Buy It Now button, " +
-        "(3) the PSA Grade 10 population count vs Total population from any 'Card insights from PSA' block or pop report, " +
-        "(4) whether an Authenticity Guarantee badge is shown, " +
-        "(5) the full item title at the top of the listing, " +
-        "(6) the seller username shown in the seller information box, " +
-        "(7) the item condition. " +
-        "Return NOT_FOUND for any text field you cannot locate. Return 0 for any population count you cannot locate.",
-      ListingSchema as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-    )) as Listing;
+    let extracted: Listing;
+    let extractionLatencyMs = 0;
+    const listingPageText = "";
 
-    // If price wasn't rendered yet, scroll and retry once
-    if (!extractionValid(extracted)) {
-      console.log("[agent] Extraction incomplete — scrolling and retrying...");
-      await stagehand.act("scroll down to see the full listing details");
-      await sleep(2000);
+    if (hasPreflight) {
+      // Phase 2 mode: cert + price already extracted by Python preflight
+      await postLog(input.deal_id, `Preflight data: cert=${input.verified_cert} price=$${input.price_locked}`);
+      console.log(`[agent] Using preflight data — cert=${input.verified_cert} price=${input.price_locked}`);
+      extracted = {
+        cert_number: input.verified_cert!,
+        price: input.price_locked!,
+        psa_pop_grade10: 0,
+        psa_pop_total: 0,
+        authenticity_guaranteed: false,
+        title: `eBay item ${itemId}`,
+        seller_username: "NOT_FOUND",
+        condition: "Graded",
+      };
+    } else {
+      // Fallback: extract from page (no preflight data — manual test or proxy failure)
+      await postLog(input.deal_id, "No preflight — extracting from page...");
+      console.log("[agent] No preflight data — running stagehand.extract()");
+      const extractStart = Date.now();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       extracted = (await stagehand.extract(
         "Extract from this eBay listing: " +
-          "(1) the PSA cert number (8 digits, near 'PSA' label or item specifics), " +
-          "(2) the Buy It Now price as a number, " +
-          "(3) the PSA Grade 10 and Total pop counts from the PSA insights block, " +
+          "(1) PSA cert number (8 digits, near PSA label or item specifics), " +
+          "(2) Buy It Now price as a number, " +
+          "(3) PSA Grade 10 and Total pop counts from PSA insights block, " +
           "(4) whether Authenticity Guarantee is present, " +
-          "(5) the listing title, " +
-          "(6) the seller username, " +
-          "(7) the item condition.",
+          "(5) the listing title, (6) seller username, (7) item condition.",
         ListingSchema as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       )) as Listing;
+      extractionLatencyMs = Date.now() - extractStart;
     }
-
-    const extractionLatencyMs = Date.now() - extractStart;
-
-    // Capture raw page text for A/B model comparison (sent to backend, never to LLM here)
-    const listingPageText = (await page.evaluate<string>("document.body.innerText")).slice(0, 4000);
 
     console.log(
       `[agent] Extracted: title="${extracted.title}" cert=${extracted.cert_number} ` +
