@@ -42,6 +42,7 @@ from newpoc.backend.database import (
     Portfolio,
     PriceHistory,
     SessionLocal,
+    SystemMeta,
     WantList,
     get_db,
     init_db,
@@ -187,6 +188,15 @@ class DealHuntResponse(BaseModel):
     platforms_queried: list[str]
 
 
+class WantListCreate(BaseModel):
+    name: str
+    grade: str
+    max_price: float
+    set_name: Optional[str] = None
+    year: Optional[int] = None
+    cert_prefix: Optional[str] = None
+
+
 class CollectrImportRequest(BaseModel):
     showcase_url: str
 
@@ -197,6 +207,17 @@ class CollectrImportResponse(BaseModel):
     skipped_count: int
     want_list_additions: list[dict]
     skipped_details: list[dict]
+
+
+class CollectrJobStartResponse(BaseModel):
+    job_id: str
+
+
+class CollectrJobStatusResponse(BaseModel):
+    status: str           # "running" | "done" | "error"
+    session_url: str | None = None
+    result: CollectrImportResponse | None = None
+    error: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -334,7 +355,7 @@ def health(db: Session = Depends(get_db)):
 
 @app.get("/want-list")
 def list_want_list(db: Session = Depends(get_db)):
-    items = db.query(WantList).filter(WantList.is_active == True).all()
+    items = db.query(WantList).filter(WantList.is_active).all()
     result = []
     for item in items:
         sanitized_avg = _get_latest_sanitized_avg(db, item.id)
@@ -354,6 +375,85 @@ def list_want_list(db: Session = Depends(get_db)):
             }
         )
     return result
+
+
+@app.post("/want-list", status_code=201)
+def create_want_list_item(body: WantListCreate, db: Session = Depends(get_db)):
+    """Add a new card to the want list."""
+    if body.max_price <= 0:
+        raise HTTPException(status_code=400, detail="max_price must be > 0")
+    item = WantList(
+        name=body.name.strip(),
+        grade=body.grade.strip(),
+        max_price=body.max_price,
+        set_name=body.set_name,
+        year=body.year,
+        cert_prefix=body.cert_prefix,
+        is_active=True,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {
+        "id": item.id,
+        "name": item.name,
+        "grade": item.grade,
+        "max_price": item.max_price,
+        "set_name": item.set_name,
+        "year": item.year,
+        "is_active": item.is_active,
+        "sanitized_avg": None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+@app.delete("/want-list/{item_id}", status_code=204)
+def delete_want_list_item(item_id: int, db: Session = Depends(get_db)):
+    """Remove a card from the want list (soft delete — sets is_active=False)."""
+    item = db.query(WantList).filter(WantList.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Want list item not found")
+    item.is_active = False
+    db.commit()
+
+
+@app.get("/watchman/status")
+def watchman_status(db: Session = Depends(get_db)):
+    """
+    Returns the last Watchman heartbeat — lets the UI show running/offline/blocked.
+    The Watchman writes this after every poll_once() call.
+    """
+    row = db.query(SystemMeta).filter_by(key="watchman_status").first()
+    if not row or not row.value:
+        return {"status": "offline", "last_scan_at": None, "items_scanned": 0, "error": None}
+
+    data = json.loads(row.value)
+    last_scan_at = data.get("last_scan_at")
+    error = data.get("error")
+    items_scanned = data.get("items_scanned", 0)
+
+    # Stale if no heartbeat in last 10 minutes
+    stale = True
+    if last_scan_at:
+        try:
+            last_dt = datetime.fromisoformat(last_scan_at)
+            stale = (datetime.utcnow() - last_dt).total_seconds() > 600
+        except ValueError:
+            pass
+
+    if stale:
+        status = "offline"
+    elif error:
+        status = "blocked"
+    else:
+        status = "running"
+
+    return {
+        "status": status,
+        "last_scan_at": last_scan_at,
+        "items_scanned": items_scanned,
+        "error": error,
+    }
 
 
 @app.get("/portfolio")
@@ -468,7 +568,7 @@ def evaluate(candidate: DealCandidate, db: Session = Depends(get_db)):
     # Gate 1: WantList item must exist and be active
     wl_item = (
         db.query(WantList)
-        .filter(WantList.id == candidate.want_list_id, WantList.is_active == True)
+        .filter(WantList.id == candidate.want_list_id, WantList.is_active)
         .first()
     )
     if not wl_item:
@@ -1024,7 +1124,7 @@ async def run_pipeline(
     """
     _validate_pipeline_request(payload, request)
 
-    wl = db.query(WantList).filter(WantList.is_active == True).first()
+    wl = db.query(WantList).filter(WantList.is_active).first()
     if not wl:
         raise HTTPException(status_code=400, detail="No active want list items in DB")
 
@@ -1295,15 +1395,15 @@ def deal_hunt(req: DealHuntRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@app.post("/integrations/collectr/import", response_model=CollectrImportResponse)
+@app.post("/integrations/collectr/import", response_model=CollectrJobStartResponse)
 def collectr_import(req: CollectrImportRequest):
     """
-    Import a public Collectr showcase profile into CardHero want_list.
-    Uses Browserbase + Stagehand to extract card data from the SPA page.
-    Blocking — can take 20-30s while Browserbase session runs.
+    Start an async Collectr import job. Returns job_id immediately.
+    Poll GET /integrations/collectr/job/{job_id} to watch progress and get
+    the live Browserbase session URL + final results.
     """
     from urllib.parse import urlparse
-    from newpoc.backend.integrations.collectr import import_cards_to_want_list, run_collectr_import
+    from newpoc.backend.integrations.collectr import start_collectr_job
 
     try:
         parsed = urlparse(req.showcase_url)
@@ -1315,24 +1415,40 @@ def collectr_import(req: CollectrImportRequest):
             detail="URL must be a Collectr showcase profile URL: https://app.getcollectr.com/showcase/profile/{uuid}",
         )
 
-    try:
-        raw = run_collectr_import(req.showcase_url)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    job_id = start_collectr_job(req.showcase_url)
+    logger.info(f"[collectr] started job {job_id[:8]} for {req.showcase_url}")
+    return CollectrJobStartResponse(job_id=job_id)
 
-    cards = raw.get("cards", [])
-    result = import_cards_to_want_list(cards)
 
-    logger.info(
-        f"[collectr] import done — found={len(cards)} "
-        f"imported={len(result['imported'])} skipped={len(result['skipped'])}"
-    )
-    return CollectrImportResponse(
-        cards_found=len(cards),
-        imported_count=len(result["imported"]),
-        skipped_count=len(result["skipped"]),
-        want_list_additions=result["imported"],
-        skipped_details=result["skipped"],
+@app.get("/integrations/collectr/job/{job_id}", response_model=CollectrJobStatusResponse)
+def collectr_job_status(job_id: str):
+    """
+    Poll the status of a running Collectr import job.
+    Returns session_url as soon as the Browserbase session starts (for live iframe embed).
+    Returns result when done.
+    """
+    from newpoc.backend.integrations.collectr import get_job
+
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = None
+    if job.get("result"):
+        r = job["result"]
+        result = CollectrImportResponse(
+            cards_found=r["cards_found"],
+            imported_count=r["imported_count"],
+            skipped_count=r["skipped_count"],
+            want_list_additions=r["want_list_additions"],
+            skipped_details=r["skipped_details"],
+        )
+
+    return CollectrJobStatusResponse(
+        status=job["status"],
+        session_url=job.get("session_url"),
+        result=result,
+        error=job.get("error"),
     )
 
 

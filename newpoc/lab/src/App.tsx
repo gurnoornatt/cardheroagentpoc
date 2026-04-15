@@ -1,24 +1,37 @@
 import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Sun, Moon } from "lucide-react";
 import { Home } from "./pages/Home";
+import { WantList } from "./pages/WantList";
 import { DealHunt } from "./pages/DealHunt";
 import { Voice } from "./pages/Voice";
+import { api } from "./lib/api";
 
-type Page = "home" | "hunt" | "voice";
+type Page = "home" | "targets" | "hunt" | "voice";
 
 function getPage(): Page {
+  if (window.location.hash === "#targets") return "targets";
   if (window.location.hash === "#hunt") return "hunt";
   if (window.location.hash === "#voice") return "voice";
   return "home";
 }
 
-const TABS: { id: Page; href: string; label: string; desc: string }[] = [
-  { id: "home",  href: "#",      label: "Dashboard", desc: "Live deal feed + system status" },
-  { id: "hunt",  href: "#hunt",  label: "Hunt",       desc: "Search deals + import Collectr" },
-  { id: "voice", href: "#voice", label: "Voice",      desc: "Ask in plain English" },
-];
+function useDarkMode() {
+  const [dark, setDark] = useState(() =>
+    document.documentElement.classList.contains("dark")
+  );
+  function toggle() {
+    const next = !dark;
+    document.documentElement.classList.toggle("dark", next);
+    localStorage.setItem("ch-theme", next ? "dark" : "light");
+    setDark(next);
+  }
+  return { dark, toggle };
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>(getPage);
+  const { dark, toggle: toggleDark } = useDarkMode();
 
   useEffect(() => {
     const onHash = () => setPage(getPage());
@@ -26,30 +39,88 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  const { data: watchman } = useQuery({
+    queryKey: ["watchman-status"],
+    queryFn: api.watchmanStatus,
+    refetchInterval: 30_000,
+  });
+
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: api.health,
+    refetchInterval: 10_000,
+    retry: false,
+  });
+
+  const isApiOnline = !!health && health.status === "ok";
+
+  const scanStatus = watchman?.status ?? "offline";
+  const dotColor =
+    !isApiOnline ? "bg-red-500" :
+    scanStatus === "running" ? "bg-green-400 animate-pulse" :
+    scanStatus === "blocked" ? "bg-yellow-400" :
+    "bg-gray-600";
+  const dotLabel =
+    !isApiOnline ? "API offline" :
+    scanStatus === "running" ? "Scanning" :
+    scanStatus === "blocked" ? "Blocked" :
+    "Idle";
+
+  const NAV_LINKS: { id: Page; href: string; label: string }[] = [
+    { id: "targets", href: "#targets", label: "Targets" },
+    { id: "hunt",    href: "#hunt",    label: "Hunt" },
+    { id: "voice",   href: "#voice",   label: "Voice" },
+  ];
+
   return (
     <>
-      {/* Top nav bar */}
-      <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/10 bg-gray-950/90 backdrop-blur px-4 flex items-center gap-1 h-12">
-        <span className="font-serif text-white mr-4 text-sm">CardHero</span>
-        {TABS.map((t) => (
-          <a
-            key={t.id}
-            href={t.href}
-            onClick={() => setPage(t.id)}
-            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors flex flex-col items-start leading-tight ${
-              page === t.id
-                ? "bg-indigo-600 text-white"
-                : "text-gray-400 hover:text-white hover:bg-white/5"
-            }`}
+      <nav className="fixed top-0 left-0 right-0 z-50 h-11 flex items-center justify-between px-5 border-b border-white/5 bg-gray-950/95 backdrop-blur">
+        {/* Left: logo — clicking goes home */}
+        <a
+          href="#"
+          onClick={() => setPage("home")}
+          className="font-display font-semibold text-white text-sm tracking-tight hover:opacity-80 transition-opacity"
+        >
+          CardHero
+        </a>
+
+        {/* Right: secondary links + status dot + theme toggle */}
+        <div className="flex items-center gap-5">
+          <div className="flex items-center gap-4">
+            {NAV_LINKS.map((t) => (
+              <a
+                key={t.id}
+                href={t.href}
+                onClick={() => setPage(t.id)}
+                className={`text-xs transition-colors ${
+                  page === t.id ? "text-white" : "text-gray-600 hover:text-gray-400"
+                }`}
+              >
+                {t.label}
+              </a>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
+            <span className="text-xs text-gray-600">{dotLabel}</span>
+          </div>
+
+          <button
+            onClick={toggleDark}
+            className="text-gray-600 hover:text-gray-400 transition-colors"
+            aria-label="Toggle dark mode"
           >
-            <span>{t.label}</span>
-            <span className={`text-[9px] font-normal ${page === t.id ? "text-indigo-200" : "text-gray-600"}`}>{t.desc}</span>
-          </a>
-        ))}
+            {dark ? <Sun size={13} /> : <Moon size={13} />}
+          </button>
+        </div>
       </nav>
 
-      <div className="pt-12">
-        {page === "home" ? <Home /> : page === "hunt" ? <DealHunt /> : <Voice />}
+      <div className="pt-11">
+        {page === "home" ? <Home /> :
+         page === "targets" ? <WantList /> :
+         page === "hunt" ? <DealHunt /> :
+         <Voice />}
       </div>
     </>
   );

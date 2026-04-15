@@ -36,7 +36,7 @@ from newpoc.backend.config import (
     SLOP_KEYWORDS,
     TAX_RATE,
 )
-from newpoc.backend.database import SessionLocal, WantList, init_db
+from newpoc.backend.database import SessionLocal, SystemMeta, WantList, init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,7 +141,7 @@ def _scrape_listings_apify(search_url: str, listing_type: str) -> list[dict]:
         return []
 
     # Step 2 — poll until SUCCEEDED or terminal state (max 90s)
-    for attempt in range(18):
+    for _ in range(18):
         time.sleep(5)
         try:
             status_resp = requests.get(
@@ -540,7 +540,7 @@ def poll_once() -> None:
     """
     db = SessionLocal()
     try:
-        want_items = db.query(WantList).filter(WantList.is_active == True).all()
+        want_items = db.query(WantList).filter(WantList.is_active).all()
         logger.info(f"[watchman] Polling {len(want_items)} active want_list items")
 
         for want_item in want_items:
@@ -598,15 +598,50 @@ def poll_once() -> None:
         db.close()
 
 
+def _write_heartbeat(items_scanned: int, error: str | None = None) -> None:
+    """Write Watchman scan result to system_meta so the UI can show status."""
+    from datetime import datetime
+    db = SessionLocal()
+    try:
+        val = json.dumps({
+            "last_scan_at": datetime.utcnow().isoformat(),
+            "items_scanned": items_scanned,
+            "error": error,
+        })
+        row = db.query(SystemMeta).filter_by(key="watchman_status").first()
+        if row:
+            row.value = val
+            row.updated_at = datetime.utcnow()
+        else:
+            db.add(SystemMeta(key="watchman_status", value=val))
+        db.commit()
+    except Exception as exc:
+        logger.warning(f"[watchman] heartbeat write failed: {exc}")
+    finally:
+        db.close()
+
+
 def main() -> None:
     """Infinite poll loop."""
     init_db()
     logger.info(f"[watchman] Starting — poll interval={POLL_INTERVAL_SECONDS}s conductor={CONDUCTOR_URL}")
     while True:
+        scan_error: str | None = None
         try:
             poll_once()
         except Exception as exc:
+            scan_error = str(exc)
             logger.error(f"[watchman] poll_once() error: {exc}")
+
+        # Count active want list items for heartbeat
+        try:
+            db = SessionLocal()
+            items_scanned = db.query(WantList).filter(WantList.is_active).count()
+            db.close()
+        except Exception:
+            items_scanned = 0
+
+        _write_heartbeat(items_scanned, scan_error)
         logger.info(f"[watchman] Sleeping {POLL_INTERVAL_SECONDS}s...")
         time.sleep(POLL_INTERVAL_SECONDS)
 

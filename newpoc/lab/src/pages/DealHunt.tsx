@@ -6,7 +6,7 @@
  * 2. Collectr Sync — paste showcase URL → import graded cards into want_list
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Search,
@@ -299,29 +299,62 @@ function DealSearchSection() {
 // ─── Collectr Sync section ────────────────────────────────────────────────────
 
 function CollectrSyncSection() {
-  const [url, setUrl]             = useState("");
-  const [loading, setLoading]     = useState(false);
-  const [result, setResult]       = useState<CollectrImportResponse | null>(null);
-  const [error, setError]         = useState<string | null>(null);
+  const [url, setUrl]               = useState("");
+  const [jobId, setJobId]           = useState<string | null>(null);
+  const [jobStatus, setJobStatus]   = useState<"running" | "done" | "error" | null>(null);
+  const [sessionUrl, setSessionUrl] = useState<string | null>(null);
+  const [result, setResult]         = useState<CollectrImportResponse | null>(null);
+  const [error, setError]           = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const qc = useQueryClient();
 
+  // Kick off polling when a jobId is set
+  useEffect(() => {
+    if (!jobId) return;
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const data = await api.collectrJobStatus(jobId);
+        if (data.session_url && !sessionUrl) setSessionUrl(data.session_url);
+        if (data.status === "done") {
+          setJobStatus("done");
+          setResult(data.result);
+          qc.invalidateQueries({ queryKey: ["want-list"] });
+          clearInterval(pollRef.current!);
+        } else if (data.status === "error") {
+          setJobStatus("error");
+          setError(data.error ?? "Unknown error");
+          clearInterval(pollRef.current!);
+        } else {
+          setJobStatus("running");
+        }
+      } catch {
+        // Network hiccup — keep polling
+      }
+    }, 2000);
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
   async function importShowcase() {
-    setLoading(true);
     setError(null);
     setResult(null);
+    setSessionUrl(null);
+    setJobStatus(null);
+    setJobId(null);
     try {
       const data = await api.collectrImport(url.trim());
-      setResult(data);
-      qc.invalidateQueries({ queryKey: ["want-list"] });
+      setJobId(data.job_id);
+      setJobStatus("running");
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } }; message?: string })
         ?.response?.data?.detail ?? String(err);
       setError(msg);
-    } finally {
-      setLoading(false);
     }
   }
 
+  const loading = jobStatus === "running";
   const isWrongUrlFormat = url.includes("getcollectr.com") && !url.includes("/showcase/profile/");
 
   return (
@@ -381,10 +414,42 @@ function CollectrSyncSection() {
         </div>
       )}
 
-      {loading && (
+      {/* Loading state — before session URL arrives */}
+      {loading && !sessionUrl && (
         <p className="text-xs text-gray-500 italic">
           Opening Browserbase session to read your showcase — takes ~30s…
         </p>
+      )}
+
+      {/* Live Browserbase session iframe */}
+      {sessionUrl && (loading || jobStatus === "done") && (
+        <div className="rounded-lg border border-white/10 overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10 bg-white/5">
+            <span className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              loading ? "bg-green-400 animate-pulse" : "bg-gray-500"
+            )} />
+            <span className="text-xs text-gray-400">
+              {loading ? "Live Browserbase session — reading your Collectr showcase" : "Session complete"}
+            </span>
+            <a
+              href={sessionUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-auto flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 hover:underline"
+            >
+              Full screen <ExternalLink size={10} />
+            </a>
+          </div>
+          <iframe
+            src={sessionUrl}
+            className="w-full"
+            style={{ height: 360, border: "none" }}
+            sandbox="allow-same-origin allow-scripts"
+            allow="clipboard-read; clipboard-write"
+            title="Collectr import live session"
+          />
+        </div>
       )}
 
       {error && !isWrongUrlFormat && (
@@ -411,17 +476,16 @@ function CollectrSyncSection() {
             </p>
           </div>
 
-          {/* Skipped breakdown — always show if any skipped */}
+          {/* Skipped breakdown */}
           {result.skipped_count > 0 && (() => {
             type SkipEntry = { card: { name?: string }; reason: string };
             const details = result.skipped_details as SkipEntry[];
-            const alreadyIn   = details.filter((s) => s.reason === "already_in_want_list");
-            const rawCards    = details.filter((s) => s.reason === "non_psa_grade");
-            const other       = details.filter((s) => s.reason !== "already_in_want_list" && s.reason !== "non_psa_grade");
+            const alreadyIn = details.filter((s) => s.reason === "already_in_want_list");
+            const rawCards  = details.filter((s) => s.reason === "non_psa_grade");
+            const other     = details.filter((s) => s.reason !== "already_in_want_list" && s.reason !== "non_psa_grade");
             return (
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-2.5 text-xs">
                 <p className="font-semibold text-gray-300 text-[11px] uppercase tracking-wide">Why cards were skipped</p>
-
                 {alreadyIn.length > 0 && (
                   <div className="space-y-1">
                     <p className="text-green-400 font-medium flex items-center gap-1">
@@ -429,13 +493,10 @@ function CollectrSyncSection() {
                     </p>
                     <p className="text-gray-500 pl-4">These were imported before — no duplicate added.</p>
                     <div className="pl-4 space-y-0.5">
-                      {alreadyIn.map((s, i) => (
-                        <p key={i} className="text-gray-600">{s.card?.name ?? "Unknown"}</p>
-                      ))}
+                      {alreadyIn.map((s, i) => <p key={i} className="text-gray-600">{s.card?.name ?? "Unknown"}</p>)}
                     </div>
                   </div>
                 )}
-
                 {rawCards.length > 0 && (
                   <div className="space-y-1">
                     <p className="text-gray-400 font-medium flex items-center gap-1">
@@ -443,13 +504,10 @@ function CollectrSyncSection() {
                     </p>
                     <p className="text-gray-500 pl-4">CardHero only hunts PSA-graded cards. Raw cards are skipped.</p>
                     <div className="pl-4 space-y-0.5">
-                      {rawCards.map((s, i) => (
-                        <p key={i} className="text-gray-600">{s.card?.name ?? "Unknown"}</p>
-                      ))}
+                      {rawCards.map((s, i) => <p key={i} className="text-gray-600">{s.card?.name ?? "Unknown"}</p>)}
                     </div>
                   </div>
                 )}
-
                 {other.length > 0 && (
                   <div className="space-y-0.5">
                     <p className="text-gray-400 font-medium">{other.length} other</p>

@@ -154,6 +154,15 @@ class LabRun(Base):
     deal = relationship("Deal", back_populates="lab_runs")
 
 
+class SystemMeta(Base):
+    """Key-value store for system state (e.g. Watchman heartbeat)."""
+    __tablename__ = "system_meta"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 def init_db() -> None:
     DB_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)

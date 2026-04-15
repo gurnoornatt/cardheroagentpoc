@@ -9,9 +9,6 @@ Run:  uv run python -m newpoc.backend.seed
 """
 
 from newpoc.backend.database import (
-    Deal,
-    LabRun,
-    AuditLog,
     WantList,
     SessionLocal,
     init_db,

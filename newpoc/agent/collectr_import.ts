@@ -15,6 +15,7 @@ import * as dotenv from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 
+import axios from "axios";
 import { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod";
 
@@ -77,6 +78,24 @@ async function main(): Promise<void> {
   try {
     await stagehand.init();
     process.stderr.write(`[collectr] Session started\n`);
+
+    // Emit live-view URL so the Python backend can surface it to the UI
+    const sessionId = stagehand.browserbaseSessionID ?? "unknown";
+    if (sessionId !== "unknown") {
+      try {
+        const debugResp = await axios.get(
+          `https://api.browserbase.com/v1/sessions/${sessionId}/debug`,
+          { headers: { "x-bb-api-key": process.env.BROWSERBASE_API_KEY! } }
+        );
+        const liveUrl: string = debugResp.data.debuggerFullscreenUrl ?? "";
+        if (liveUrl) {
+          const embedUrl = liveUrl.includes("?") ? `${liveUrl}&navbar=false` : `${liveUrl}?navbar=false`;
+          process.stderr.write(`[BB_SESSION_URL] ${embedUrl}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`[collectr] Could not fetch BB debug URL: ${(e as Error).message}\n`);
+      }
+    }
 
     // Stagehand v3: page accessed via stagehand.context.pages()[0]
     const page = stagehand.context.pages()[0];

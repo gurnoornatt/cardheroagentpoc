@@ -400,6 +400,38 @@ See `.env.example` for the full list. Key vars:
 
 ---
 
+## Code Quality — Run Before Every Commit
+
+Both tools are installed as dev deps (`uv add ruff vulture --dev`).
+
+### Ruff (linter + formatter)
+```bash
+uv run ruff check newpoc/backend/      # lint — must return "All checks passed!"
+uv run ruff format newpoc/backend/     # auto-format
+```
+Catches: unused imports, bare `== True` comparisons, style issues, modern Python syntax.
+**FastAPI route handlers and Pydantic fields will NOT appear** — ruff understands decorators.
+
+### Vulture (dead code)
+```bash
+uv run vulture newpoc/backend/ --min-confidence 80
+```
+Run at 80% confidence — 60% produces too many false positives from FastAPI/SQLAlchemy.
+**Expected false positives at 60%:** FastAPI route functions (framework registers them via decorator), SQLAlchemy `relationship()` definitions (ORM wires them at query time), Pydantic model fields (used by serialization). These are NOT dead code.
+**Real findings:** Unused local variables, unused loop counters (rename to `_`), imports that nothing reads.
+
+### TypeScript (frontend)
+```bash
+cd newpoc/lab && npx tsc --noEmit     # must return 0 errors before any commit
+```
+
+### Checklist before committing
+1. `uv run ruff check newpoc/backend/` → clean
+2. `uv run vulture newpoc/backend/ --min-confidence 80` → clean
+3. `cd newpoc/lab && npx tsc --noEmit` → 0 errors
+
+---
+
 ## Debugging
 
 | Symptom | Likely cause | Fix |

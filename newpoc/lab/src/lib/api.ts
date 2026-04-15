@@ -159,6 +159,17 @@ export interface CollectrWantListAddition {
   is_active: boolean;
 }
 
+export interface CollectrJobStartResponse {
+  job_id: string;
+}
+
+export interface CollectrJobStatusResponse {
+  status: "running" | "done" | "error";
+  session_url: string | null;
+  result: CollectrImportResponse | null;
+  error: string | null;
+}
+
 export interface CollectrImportResponse {
   cards_found: number;
   imported_count: number;
@@ -172,12 +183,30 @@ export interface VoiceSession {
   expires_at: number | null;
 }
 
+export interface WatchmanStatus {
+  status: "running" | "offline" | "blocked";
+  last_scan_at: string | null;
+  items_scanned: number;
+  error: string | null;
+}
+
+export interface WantListCreatePayload {
+  name: string;
+  grade: string;
+  max_price: number;
+  set_name?: string;
+  year?: number;
+  cert_prefix?: string;
+}
 
 // ─── API functions ────────────────────────────────────────────────────────────
 
 export const api = {
   health: () => http.get<Health>("/health").then((r) => r.data),
   wantList: () => http.get<WantListItem[]>("/want-list").then((r) => r.data),
+  addWantListItem: (body: WantListCreatePayload) =>
+    http.post<WantListItem>("/want-list", body).then((r) => r.data),
+  watchmanStatus: () => http.get<WatchmanStatus>("/watchman/status").then((r) => r.data),
   portfolio: () => http.get<PortfolioItem[]>("/portfolio").then((r) => r.data),
   deals: (status?: string) =>
     http
@@ -206,7 +235,11 @@ export const api = {
       .then((r) => r.data),
   collectrImport: (showcase_url: string) =>
     http
-      .post<CollectrImportResponse>("/integrations/collectr/import", { showcase_url })
+      .post<CollectrJobStartResponse>("/integrations/collectr/import", { showcase_url })
+      .then((r) => r.data),
+  collectrJobStatus: (job_id: string) =>
+    http
+      .get<CollectrJobStatusResponse>(`/integrations/collectr/job/${job_id}`)
       .then((r) => r.data),
   voiceSession: () => http.get<VoiceSession>("/voice/session").then((r) => r.data),
 };
