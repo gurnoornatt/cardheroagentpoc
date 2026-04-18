@@ -6,6 +6,7 @@ import { WantList } from "./pages/WantList";
 import { DealHunt } from "./pages/DealHunt";
 import { Voice } from "./pages/Voice";
 import { api } from "./lib/api";
+import { setupPushNotifications } from "./lib/notifications";
 
 type Page = "home" | "targets" | "hunt" | "voice";
 
@@ -37,6 +38,14 @@ export default function App() {
     const onHash = () => setPage(getPage());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Request push notification permission after 2 s (avoids jarring immediate prompt)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setupPushNotifications().catch(() => undefined);
+    }, 2000);
+    return () => clearTimeout(t);
   }, []);
 
   const { data: watchman } = useQuery({

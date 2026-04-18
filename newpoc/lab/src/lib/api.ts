@@ -183,6 +183,18 @@ export interface VoiceSession {
   expires_at: number | null;
 }
 
+export interface VapidPublicKeyResponse {
+  public_key: string;
+}
+
+export interface PushSubscribePayload {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
 export interface WatchmanStatus {
   status: "running" | "offline" | "blocked";
   last_scan_at: string | null;
@@ -242,4 +254,12 @@ export const api = {
       .get<CollectrJobStatusResponse>(`/integrations/collectr/job/${job_id}`)
       .then((r) => r.data),
   voiceSession: () => http.get<VoiceSession>("/voice/session").then((r) => r.data),
+  vapidPublicKey: () =>
+    http.get<VapidPublicKeyResponse>("/notifications/vapid-public-key").then((r) => r.data),
+  subscribePush: (payload: PushSubscribePayload) =>
+    http.post("/notifications/subscribe", payload).then((r) => r.data),
+  unsubscribePush: (endpoint: string) =>
+    http
+      .delete(`/notifications/subscribe`, { params: { endpoint } })
+      .then((r) => r.data),
 };

@@ -10,6 +10,7 @@ dependencies = [
     "praw>=7.7.1",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.2",
+    "pywebpush>=2.3.0",
     "requests>=2.33.0",
     "sqlalchemy>=2.0.48",
     "uvicorn[standard]>=0.42.0",

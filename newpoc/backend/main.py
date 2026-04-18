@@ -35,12 +35,15 @@ from newpoc.backend.config import (
     PRICE_TRIGGER_DELTA,
     TAX_RATE,
 )
+from pywebpush import WebPushException, webpush
+
 from newpoc.backend.database import (
     AuditLog,
     Deal,
     LabRun,
     Portfolio,
     PriceHistory,
+    PushSubscription,
     SessionLocal,
     SystemMeta,
     WantList,
@@ -51,6 +54,10 @@ from newpoc.backend.sentiment import compute_effective_weight, get_sentiment_sco
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "mailto:admin@example.com")
 
 
 @asynccontextmanager
@@ -218,6 +225,11 @@ class CollectrJobStatusResponse(BaseModel):
     session_url: str | None = None
     result: CollectrImportResponse | None = None
     error: str | None = None
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    keys: dict  # {"p256dh": "...", "auth": "..."}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +468,90 @@ def watchman_status(db: Session = Depends(get_db)):
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Notification endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/notifications/vapid-public-key")
+def get_vapid_public_key():
+    """Return the VAPID application server key so the browser can subscribe."""
+    return {"public_key": VAPID_PUBLIC_KEY}
+
+
+@app.post("/notifications/subscribe", status_code=201)
+def subscribe_push(body: PushSubscribeRequest, db: Session = Depends(get_db)):
+    """Upsert a push subscription. Called by the browser after subscribing."""
+    existing = db.query(PushSubscription).filter_by(endpoint=body.endpoint).first()
+    if existing:
+        existing.p256dh = body.keys.get("p256dh", "")
+        existing.auth = body.keys.get("auth", "")
+    else:
+        sub = PushSubscription(
+            endpoint=body.endpoint,
+            p256dh=body.keys.get("p256dh", ""),
+            auth=body.keys.get("auth", ""),
+        )
+        db.add(sub)
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/notifications/subscribe", status_code=204)
+def unsubscribe_push(endpoint: str, db: Session = Depends(get_db)):
+    """Remove a push subscription (called when user revokes permission)."""
+    sub = db.query(PushSubscription).filter_by(endpoint=endpoint).first()
+    if sub:
+        db.delete(sub)
+        db.commit()
+
+
+def send_push(deal_id: int, card_name: str, card_grade: str, landed_cost: float, max_price: float) -> None:
+    """
+    Fan push notification out to all subscribed browsers.
+    Runs in a BackgroundTask — never blocks /evaluate.
+    Deletes expired subscriptions (410 Gone) automatically.
+    """
+    pct_below = round((1 - landed_cost / max_price) * 100) if max_price > 0 else 0
+    title = f"{card_name} {card_grade}"
+    body = f"${landed_cost:.0f} landed · {pct_below}% under your max"
+    payload = json.dumps({"title": title, "body": body, "url": "/#findings"})
+
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        logger.warning("[send_push] VAPID keys not configured — skipping push")
+        return
+
+    db = SessionLocal()
+    try:
+        subs = db.query(PushSubscription).all()
+        stale_ids = []
+        for sub in subs:
+            try:
+                webpush(
+                    subscription_info={
+                        "endpoint": sub.endpoint,
+                        "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
+                    },
+                    data=payload,
+                    vapid_private_key=VAPID_PRIVATE_KEY,
+                    vapid_claims={"sub": f"mailto:{VAPID_CLAIMS_EMAIL}"},
+                )
+                logger.info("[send_push] push sent — deal_id=%d endpoint=...%s", deal_id, sub.endpoint[-20:])
+            except WebPushException as exc:
+                if exc.response is not None and exc.response.status_code == 410:
+                    stale_ids.append(sub.id)
+                    logger.info("[send_push] subscription expired, removing — endpoint=...%s", sub.endpoint[-20:])
+                else:
+                    logger.warning("[send_push] push failed — %s", exc)
+        if stale_ids:
+            db.query(PushSubscription).filter(PushSubscription.id.in_(stale_ids)).delete(synchronize_session=False)
+            db.commit()
+    except Exception as exc:
+        logger.warning("[send_push] unexpected error — %s", exc)
+    finally:
+        db.close()
+
+
 @app.get("/portfolio")
 def list_portfolio(db: Session = Depends(get_db)):
     items = db.query(Portfolio).all()
@@ -564,7 +660,11 @@ def _deal_to_dict(deal: Deal) -> dict:
 
 
 @app.post("/evaluate", response_model=EvaluateResponse)
-def evaluate(candidate: DealCandidate, db: Session = Depends(get_db)):
+def evaluate(
+    candidate: DealCandidate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     # Gate 1: WantList item must exist and be active
     wl_item = (
         db.query(WantList)
@@ -660,6 +760,15 @@ def evaluate(candidate: DealCandidate, db: Session = Depends(get_db)):
     db.add(deal)
     db.commit()
     db.refresh(deal)
+
+    background_tasks.add_task(
+        send_push,
+        deal.id,
+        wl_item.name,
+        wl_item.grade,
+        landed_cost,
+        wl_item.max_price,
+    )
 
     logger.info(
         f"[evaluate] GO — deal_id={deal.id} landed_cost={landed_cost} "
