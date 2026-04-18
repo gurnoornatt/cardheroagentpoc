@@ -66,14 +66,31 @@ def test_subscribe_creates_subscription(client):
 
 
 def test_subscribe_upserts_on_duplicate(client):
-    """POST /notifications/subscribe with existing endpoint returns 201 (upsert)."""
-    payload = {
+    """POST /notifications/subscribe with existing endpoint updates keys and returns 201."""
+    first_payload = {
         "endpoint": "https://fcm.googleapis.com/fcm/send/test-endpoint",
-        "keys": {"p256dh": "BNcRdreALRFXTkOOUHK_ABc", "auth": "tBHItJI5svbpez7KI4CCXg"},
+        "keys": {"p256dh": "FIRST_KEY_AAAA", "auth": "FIRST_AUTH"},
     }
-    client.post("/notifications/subscribe", json=payload)
-    resp = client.post("/notifications/subscribe", json=payload)  # duplicate
+    client.post("/notifications/subscribe", json=first_payload)
+
+    updated_payload = {
+        "endpoint": "https://fcm.googleapis.com/fcm/send/test-endpoint",
+        "keys": {"p256dh": "UPDATED_KEY_BBBB", "auth": "UPDATED_AUTH"},
+    }
+    resp = client.post("/notifications/subscribe", json=updated_payload)
     assert resp.status_code == 201
+
+    # Verify the keys were actually updated in the DB
+    db = SessionLocal()
+    try:
+        row = db.query(PushSubscription).filter_by(
+            endpoint="https://fcm.googleapis.com/fcm/send/test-endpoint"
+        ).first()
+        assert row is not None
+        assert row.p256dh == "UPDATED_KEY_BBBB"
+        assert row.auth == "UPDATED_AUTH"
+    finally:
+        db.close()
 
 
 def test_unsubscribe_removes_subscription(client):
@@ -152,6 +169,37 @@ def test_send_push_called_on_go_decision(client):
     assert data["decision"] == "GO"
     # BackgroundTasks run synchronously in TestClient
     mock_webpush.assert_called_once()
+
+
+def test_send_push_cleans_up_expired_410_subscription(client):
+    """send_push() deletes subscriptions that return 410 Gone from the push service."""
+    from requests.models import Response as RequestsResponse
+    from newpoc.backend.main import send_push
+
+    db = SessionLocal()
+    try:
+        _seed_want_list(db)
+        _seed_subscription(db, endpoint="https://fcm.googleapis.com/expired")
+    finally:
+        db.close()
+
+    mock_410 = MagicMock()
+    mock_410.status_code = 410
+    gone_exc = Exception.__new__(__import__("pywebpush").WebPushException)
+    gone_exc.response = mock_410
+    gone_exc.args = ("Gone",)
+
+    with patch("newpoc.backend.main.webpush", side_effect=gone_exc):
+        send_push(99, "Charizard ex", "PSA 10", 300.0, 400.0)
+
+    db = SessionLocal()
+    try:
+        count = db.query(PushSubscription).filter_by(
+            endpoint="https://fcm.googleapis.com/expired"
+        ).count()
+        assert count == 0, "Expired 410 subscription should have been deleted"
+    finally:
+        db.close()
 
 
 def test_send_push_not_called_on_no_go(client):

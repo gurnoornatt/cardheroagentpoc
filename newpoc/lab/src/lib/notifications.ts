@@ -25,11 +25,16 @@ export async function setupPushNotifications(): Promise<void> {
     return;
   }
 
+  try {
+    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  } catch {
+    return;
+  }
+
+  // Wait for the SW to become active — pushManager.subscribe() requires an active SW
   let registration: ServiceWorkerRegistration;
   try {
-    registration = await navigator.serviceWorker.register("/sw.js", {
-      scope: "/",
-    });
+    registration = await navigator.serviceWorker.ready;
   } catch {
     return;
   }
@@ -47,9 +52,11 @@ export async function setupPushNotifications(): Promise<void> {
     return;
   }
 
+  // Reuse existing subscription if one already exists (avoids redundant POST on every mount)
   let sub: PushSubscription;
   try {
-    sub = await registration.pushManager.subscribe({
+    const existing = await registration.pushManager.getSubscription();
+    sub = existing ?? await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
@@ -67,6 +74,6 @@ export async function setupPushNotifications(): Promise<void> {
       },
     });
   } catch {
-    // Best-effort — subscription saved in browser, backend missed. Will retry on next mount.
+    // Best-effort — subscription saved in browser, backend missed. Retries on next mount.
   }
 }

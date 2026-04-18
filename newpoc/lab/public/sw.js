@@ -26,9 +26,7 @@ self.addEventListener('notificationclick', (event) => {
         // If a CardHero tab is already open, focus it and navigate
         for (const client of windowClients) {
           if (client.url.includes(self.location.origin) && 'focus' in client) {
-            client.focus();
-            client.navigate(event.notification.data.url);
-            return;
+            return client.focus().then(() => client.navigate(event.notification.data.url));
           }
         }
         // Otherwise open a new tab

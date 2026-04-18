@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
-VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "mailto:admin@example.com")
+VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "admin@example.com")
 
 
 @asynccontextmanager
@@ -227,9 +227,14 @@ class CollectrJobStatusResponse(BaseModel):
     error: str | None = None
 
 
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
 class PushSubscribeRequest(BaseModel):
     endpoint: str
-    keys: dict  # {"p256dh": "...", "auth": "..."}
+    keys: PushKeys
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -484,13 +489,13 @@ def subscribe_push(body: PushSubscribeRequest, db: Session = Depends(get_db)):
     """Upsert a push subscription. Called by the browser after subscribing."""
     existing = db.query(PushSubscription).filter_by(endpoint=body.endpoint).first()
     if existing:
-        existing.p256dh = body.keys.get("p256dh", "")
-        existing.auth = body.keys.get("auth", "")
+        existing.p256dh = body.keys.p256dh
+        existing.auth = body.keys.auth
     else:
         sub = PushSubscription(
             endpoint=body.endpoint,
-            p256dh=body.keys.get("p256dh", ""),
-            auth=body.keys.get("auth", ""),
+            p256dh=body.keys.p256dh,
+            auth=body.keys.auth,
         )
         db.add(sub)
     db.commit()
@@ -542,7 +547,9 @@ def send_push(deal_id: int, card_name: str, card_grade: str, landed_cost: float,
                     stale_ids.append(sub.id)
                     logger.info("[send_push] subscription expired, removing — endpoint=...%s", sub.endpoint[-20:])
                 else:
-                    logger.warning("[send_push] push failed — %s", exc)
+                    detail = exc.response.text if exc.response is not None else str(exc)
+                    status = exc.response.status_code if exc.response is not None else "?"
+                    logger.warning("[send_push] push failed status=%s — %s", status, detail)
         if stale_ids:
             db.query(PushSubscription).filter(PushSubscription.id.in_(stale_ids)).delete(synchronize_session=False)
             db.commit()
