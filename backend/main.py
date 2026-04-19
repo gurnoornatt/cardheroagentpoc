@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from newpoc.backend.config import (
+from backend.config import (
     AGENT_BUDGET,
     DAILY_SPEND_LIMIT,
     PRICE_TRIGGER_DELTA,
@@ -37,7 +37,7 @@ from newpoc.backend.config import (
 )
 from pywebpush import WebPushException, webpush
 
-from newpoc.backend.database import (
+from backend.database import (
     AuditLog,
     Deal,
     LabRun,
@@ -50,7 +50,7 @@ from newpoc.backend.database import (
     get_db,
     init_db,
 )
-from newpoc.backend.sentiment import compute_effective_weight, get_sentiment_score
+from backend.sentiment import compute_effective_weight, get_sentiment_score
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1403,7 +1403,7 @@ def scraper_compare(req: ScraperCompareRequest):
     import time
     from concurrent.futures import ThreadPoolExecutor
     from urllib.parse import quote_plus
-    from newpoc.backend.monitor import _scrape_listings_apify, _scrape_listings_html
+    from backend.monitor import _scrape_listings_apify, _scrape_listings_html
 
     search_url = (
         f"https://www.ebay.com/sch/i.html"
@@ -1464,7 +1464,7 @@ def deal_hunt(req: DealHuntRequest):
     On-demand multi-platform deal search. Agent-callable tool endpoint.
     eBay is always active. Mercari/OfferUp/FB activate when PLATFORM_ACTORS are set.
     """
-    from newpoc.backend.monitor import WantListProxy, run_waterfall, scrape_platform
+    from backend.monitor import WantListProxy, run_waterfall, scrape_platform
 
     valid_platforms = {"ebay", "mercari", "offerup", "fb_marketplace"}
     platforms = [p for p in req.platforms if p in valid_platforms]
@@ -1519,7 +1519,7 @@ def collectr_import(req: CollectrImportRequest):
     the live Browserbase session URL + final results.
     """
     from urllib.parse import urlparse
-    from newpoc.backend.integrations.collectr import start_collectr_job
+    from backend.integrations.collectr import start_collectr_job
 
     try:
         parsed = urlparse(req.showcase_url)
@@ -1543,7 +1543,7 @@ def collectr_job_status(job_id: str):
     Returns session_url as soon as the Browserbase session starts (for live iframe embed).
     Returns result when done.
     """
-    from newpoc.backend.integrations.collectr import get_job
+    from backend.integrations.collectr import get_job
 
     job = get_job(job_id)
     if job is None:

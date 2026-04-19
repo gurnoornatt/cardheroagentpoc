@@ -12,7 +12,7 @@ Gate 5 — Listing Type Split:
   AUCTION   → POST /price-history  (data ingestion only)
   BUY_IT_NOW → POST /evaluate       → trigger_agent on GO
 
-Run:  uv run python -m newpoc.backend.monitor
+Run:  uv run python -m backend.monitor
 """
 
 import json
@@ -28,7 +28,7 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
-from newpoc.backend.config import (
+from backend.config import (
     CONDUCTOR_URL,
     POLL_INTERVAL_SECONDS,
     SELLER_FEEDBACK_MIN,
@@ -36,7 +36,7 @@ from newpoc.backend.config import (
     SLOP_KEYWORDS,
     TAX_RATE,
 )
-from newpoc.backend.database import SessionLocal, SystemMeta, WantList, init_db
+from backend.database import SessionLocal, SystemMeta, WantList, init_db
 
 logging.basicConfig(
     level=logging.INFO,

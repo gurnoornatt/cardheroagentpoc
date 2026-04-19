@@ -11,8 +11,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from newpoc.backend.database import Base, get_db, WantList, Portfolio, PriceHistory
-from newpoc.backend.main import app
+from backend.database import Base, get_db, WantList, Portfolio, PriceHistory
+from backend.main import app
 
 import json
 from datetime import date, timedelta

@@ -11,8 +11,8 @@ os.environ.setdefault("VAPID_PRIVATE_KEY", "fake-private-key")
 os.environ.setdefault("VAPID_PUBLIC_KEY", "BFake_public_key_base64url_padded_to_65_bytes_AAAA")
 os.environ.setdefault("VAPID_CLAIMS_EMAIL", "test@example.com")
 
-from newpoc.backend.database import Base, PushSubscription, SessionLocal, WantList, engine
-from newpoc.backend.main import app
+from backend.database import Base, PushSubscription, SessionLocal, WantList, engine
+from backend.main import app
 
 
 @pytest.fixture(autouse=True)
@@ -148,7 +148,7 @@ def test_send_push_called_on_go_decision(client):
     finally:
         db.close()
 
-    with patch("newpoc.backend.main.webpush") as mock_webpush:
+    with patch("backend.main.webpush") as mock_webpush:
         mock_webpush.return_value = MagicMock(status_code=201)
         resp = client.post(
             "/evaluate",
@@ -174,7 +174,7 @@ def test_send_push_called_on_go_decision(client):
 def test_send_push_cleans_up_expired_410_subscription(client):
     """send_push() deletes subscriptions that return 410 Gone from the push service."""
     from requests.models import Response as RequestsResponse
-    from newpoc.backend.main import send_push
+    from backend.main import send_push
 
     db = SessionLocal()
     try:
@@ -189,7 +189,7 @@ def test_send_push_cleans_up_expired_410_subscription(client):
     gone_exc.response = mock_410
     gone_exc.args = ("Gone",)
 
-    with patch("newpoc.backend.main.webpush", side_effect=gone_exc):
+    with patch("backend.main.webpush", side_effect=gone_exc):
         send_push(99, "Charizard ex", "PSA 10", 300.0, 400.0)
 
     db = SessionLocal()
@@ -212,7 +212,7 @@ def test_send_push_not_called_on_no_go(client):
     finally:
         db.close()
 
-    with patch("newpoc.backend.main.webpush") as mock_webpush:
+    with patch("backend.main.webpush") as mock_webpush:
         resp = client.post(
             "/evaluate",
             json={

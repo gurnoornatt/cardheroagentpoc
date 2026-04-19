@@ -4,7 +4,7 @@ CardHero v2 — End-to-End API tests
 Tests every endpoint and decision-tree gate using an in-memory SQLite database.
 Each test function gets a fresh, isolated DB via the seeded_client fixture.
 
-Run:  uv run pytest newpoc/tests/ -v
+Run:  uv run pytest tests/ -v
 """
 
 import json
@@ -174,7 +174,7 @@ class TestEvaluate:
     # Gate 1: WantList must be active
     def test_gate1_inactive_want_list(self, seeded_client):
         client, db, card1, card2 = seeded_client
-        from newpoc.backend.database import WantList
+        from backend.database import WantList
         inactive = db.query(WantList).filter(WantList.is_active == False).first()
         r = client.post("/evaluate", json=self._base_payload(inactive.id))
         assert r.status_code == 404
@@ -192,7 +192,7 @@ class TestEvaluate:
     def test_gate2_auction_records_price_history(self, seeded_client):
         """Auction submission via /evaluate should also update price_history."""
         client, db, _, card2 = seeded_client
-        from newpoc.backend.database import PriceHistory
+        from backend.database import PriceHistory
         payload = {**self._base_payload(card2.id), "listing_type": "AUCTION", "price": 85.0}
         client.post("/evaluate", json=payload)
         row = db.query(PriceHistory).filter(PriceHistory.want_list_id == card2.id).first()
@@ -212,7 +212,7 @@ class TestEvaluate:
     # Gate 4: Budget circuit breaker
     def test_gate4_daily_budget_exceeded(self, seeded_client):
         client, db, card1, _ = seeded_client
-        from newpoc.backend.database import Deal
+        from backend.database import Deal
         from datetime import datetime, timezone
         # Inject a large BOUGHT deal to exhaust the budget
         big_deal = Deal(
@@ -270,7 +270,7 @@ class TestEvaluate:
     # Gate 8: Successful GO
     def test_gate8_go_creates_deal(self, seeded_client):
         client, db, card1, _ = seeded_client
-        from newpoc.backend.database import Deal
+        from backend.database import Deal
         payload = {**self._base_payload(card1.id), "price": 185.0,
                    "url": "https://www.ebay.com/itm/GO_TEST_UNIQUE"}
         r = client.post("/evaluate", json=payload)
@@ -391,7 +391,7 @@ class TestDeals:
 class TestAgentResult:
     def _create_analyzing_deal(self, client, db, want_list_id):
         """Create a deal directly in ANALYZING state."""
-        from newpoc.backend.database import Deal
+        from backend.database import Deal
         from datetime import datetime, timezone
         deal = Deal(
             want_list_id=want_list_id,
@@ -503,7 +503,7 @@ class TestAgentResult:
 
 class TestLab:
     def _create_deal(self, db, want_list_id):
-        from newpoc.backend.database import Deal
+        from backend.database import Deal
         from datetime import datetime, timezone
         deal = Deal(
             want_list_id=want_list_id,
@@ -646,7 +646,7 @@ class TestIQRMath:
     """Unit tests for the IQR computation logic (imported directly)."""
 
     def test_less_than_4_prices_returns_none(self):
-        from newpoc.backend.main import _compute_iqr_stats
+        from backend.main import _compute_iqr_stats
         for n in range(0, 4):
             stats = _compute_iqr_stats([100.0] * n)
             assert stats["sanitized_avg"] is None
@@ -654,7 +654,7 @@ class TestIQRMath:
             assert stats["iqr_high"] is None
 
     def test_uniform_prices(self):
-        from newpoc.backend.main import _compute_iqr_stats
+        from backend.main import _compute_iqr_stats
         prices = [100.0, 100.0, 100.0, 100.0, 100.0]
         stats = _compute_iqr_stats(prices)
         assert stats["sanitized_avg"] == pytest.approx(100.0)
@@ -662,7 +662,7 @@ class TestIQRMath:
         assert stats["iqr_high"] == pytest.approx(100.0)
 
     def test_outlier_excluded(self):
-        from newpoc.backend.main import _compute_iqr_stats
+        from backend.main import _compute_iqr_stats
         # Normal cluster around 100, one extreme outlier
         prices = [95.0, 98.0, 100.0, 102.0, 105.0, 1000.0]
         stats = _compute_iqr_stats(prices)
@@ -671,7 +671,7 @@ class TestIQRMath:
         assert stats["sanitized_avg"] < 120
 
     def test_realistic_card_prices(self):
-        from newpoc.backend.main import _compute_iqr_stats
+        from backend.main import _compute_iqr_stats
         prices = [310.0, 325.0, 318.0, 299.0, 340.0, 335.0, 312.0]
         stats = _compute_iqr_stats(prices)
         assert stats["sanitized_avg"] is not None
@@ -679,7 +679,7 @@ class TestIQRMath:
         assert stats["iqr_low"] < stats["iqr_high"]
 
     def test_symmetrical_distribution(self):
-        from newpoc.backend.main import _compute_iqr_stats
+        from backend.main import _compute_iqr_stats
         prices = [90.0, 95.0, 100.0, 105.0, 110.0]
         stats = _compute_iqr_stats(prices)
         assert stats["sanitized_avg"] == pytest.approx(100.0, abs=1.0)

@@ -22,7 +22,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from newpoc.backend.database import SessionLocal, WantList
+from backend.database import SessionLocal, WantList
 
 logger = logging.getLogger(__name__)
 

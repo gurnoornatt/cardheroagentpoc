@@ -2,7 +2,7 @@
 Centralized configuration for CardHero v2.
 
 All env vars are loaded here — no other module should call os.getenv or load_dotenv.
-.env is always resolved as newpoc/.env regardless of cwd.
+.env is always resolved relative to the repo root regardless of cwd.
 """
 
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Always resolves to newpoc/.env regardless of working directory
+# Always resolves to repo root .env regardless of working directory
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_ENV_PATH)
 

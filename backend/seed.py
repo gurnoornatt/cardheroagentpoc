@@ -5,10 +5,10 @@ Seeds only the want_list table (required for /pipeline/run to work).
 No fake deals, no mock lab runs, no portfolio data.
 Real runs come from actual pipeline executions.
 
-Run:  uv run python -m newpoc.backend.seed
+Run:  uv run python -m backend.seed
 """
 
-from newpoc.backend.database import (
+from backend.database import (
     WantList,
     SessionLocal,
     init_db,

@@ -26,7 +26,7 @@ def get_sentiment_score(card_name: str) -> float:
     Score = average of (upvote_ratio - 0.5) * 2 over the top 10 relevant posts.
     Returns 0.0 if Reddit creds are missing, PRAW errors out, or no posts found.
     """
-    from newpoc.backend.config import REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
+    from backend.config import REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
 
     if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
         logger.debug("[sentiment] No Reddit credentials configured — returning 0.0")

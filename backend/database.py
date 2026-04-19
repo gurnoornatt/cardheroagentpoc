@@ -21,7 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
-from newpoc.backend.config import DATABASE_URL, DB_DIR
+from backend.config import DATABASE_URL, DB_DIR
 
 DB_DIR.mkdir(parents=True, exist_ok=True)
 
