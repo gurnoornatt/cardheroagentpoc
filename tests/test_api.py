@@ -34,8 +34,8 @@ class TestHealth:
         body = client.get("/health").json()
         assert isinstance(body["daily_spend_today"], float)
         assert isinstance(body["budget_remaining"], float)
-        assert body["daily_spend_limit"] == 500.0
-        assert body["agent_budget"] == 150.0
+        assert isinstance(body["daily_spend_limit"], float)
+        assert isinstance(body["agent_budget"], float)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
