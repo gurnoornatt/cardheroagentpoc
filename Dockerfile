@@ -17,8 +17,8 @@ RUN uv sync --frozen --no-dev
 
 # Agent Node deps — install before copying source for layer cache
 # --include=dev ensures ts-node is installed even if NODE_ENV=production
-COPY newpoc/agent/package.json newpoc/agent/
-RUN cd newpoc/agent && npm install --include=dev
+COPY agent/package.json agent/
+RUN cd agent && npm install --include=dev
 
 # Copy all source
 COPY . .
@@ -27,4 +27,4 @@ COPY . .
 RUN mkdir -p /data
 
 EXPOSE 8001
-CMD uv run python -m newpoc.backend.seed && uv run uvicorn newpoc.backend.main:app --host 0.0.0.0 --port ${PORT:-8001}
+CMD uv run python -m backend.seed && uv run uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8001}

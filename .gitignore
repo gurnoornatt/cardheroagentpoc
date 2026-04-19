@@ -17,16 +17,16 @@ wheels/
 # SQLite databases
 *.db
 *.sqlite
-newpoc/backend/db/
+backend/db/
 
 # Node
 node_modules/
-newpoc/agent/dist/
-newpoc/lab/dist/
+agent/dist/
+frontend/dist/
+frontend/node_modules/
 
 # Agent receipts (screenshots + DOM snapshots)
 receipts/
-newpoc/receipts/
 
 # macOS
 .DS_Store
