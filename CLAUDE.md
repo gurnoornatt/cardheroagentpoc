@@ -3,19 +3,19 @@
 ## Monorepo Layout
 
 ```
-newpoc/
-  backend/        ← Python/FastAPI: Conductor + Watchman + Sentiment
-    db/           ← SQLite database file (auto-created)
-  agent/          ← Node.js/Stagehand: Last-Mile checkout agent
-  lab/            ← CardHero Lab dashboard (metrics + A/B testing)
-  receipts/       ← Screenshots + DOM snapshots from agent runs
-  .env            ← Copy from .env.example, fill in real credentials
-  .env.example    ← Env template
+backend/        ← Python/FastAPI: Conductor + Watchman + Sentiment
+  db/           ← SQLite database file (auto-created)
+agent/          ← Node.js/Stagehand: Last-Mile checkout agent
+frontend/       ← CardHero Lab dashboard (metrics + A/B testing)
+tests/          ← pytest test suite
+receipts/       ← Screenshots + DOM snapshots from agent runs
+.env            ← Copy from .env.example, fill in real credentials
+.env.example    ← Env template
 ```
 
-**Python deps:** managed by the parent repo's `pyproject.toml` + `uv`.  
-**Node deps:** each of `agent/` and `lab/` have their own `package.json`.  
-**Env:** `newpoc/.env` — scoped to this POC only.
+**Python deps:** managed by `pyproject.toml` + `uv`.  
+**Node deps:** each of `agent/` and `frontend/` have their own `package.json`.  
+**Env:** `.env` at repo root.
 
 ---
 
@@ -61,28 +61,28 @@ Conductor /agent/result endpoint
 
 ```bash
 # From repo root (cardAgentPOC/)
-cp newpoc/.env.example newpoc/.env
-# Fill in real credentials in newpoc/.env
+cp .env.example .env
+# Fill in real credentials in .env
 
 # Python backend (uses root pyproject.toml)
-uv run uvicorn newpoc.backend.main:app --reload --port 8001
+uv run uvicorn backend.main:app --reload --port 8001
 
 # Watchman
-uv run python -m newpoc.backend.monitor
+uv run python -m backend.monitor
 
 # Agent
-cd newpoc/agent && npm install
+cd agent && npm install
 npx ts-node checkout.ts '{"deal_id":1,"url":"...","max_allowed_price":350.00,"expected_cert_prefix":"POKE"}'
 
 # Lab dashboard
-cd newpoc/lab && npm install && npm run dev
+cd frontend && npm install && npm run dev
 ```
 
 ---
 
 ## Database Schema
 
-**File:** `newpoc/backend/db/cardhero.db`
+**File:** `backend/db/cardhero.db`
 
 ### `want_list`
 | Column | Type | Notes |
@@ -262,7 +262,7 @@ const data = await stagehand.extract({
 
 Browserbase datacenter IPs trigger eBay hCaptcha on every guest checkout. Fix: route the session through a residential proxy with sticky sessions so the IP doesn't rotate between checkout pages.
 
-**Constructor logic (`newpoc/agent/checkout.ts`):**
+**Constructor logic (`agent/checkout.ts`):**
 ```typescript
 const proxyUrl = process.env.RESIDENTIAL_PROXY_URL; // http://user:pass@host:port
 
@@ -406,15 +406,15 @@ Both tools are installed as dev deps (`uv add ruff vulture --dev`).
 
 ### Ruff (linter + formatter)
 ```bash
-uv run ruff check newpoc/backend/      # lint — must return "All checks passed!"
-uv run ruff format newpoc/backend/     # auto-format
+uv run ruff check backend/      # lint — must return "All checks passed!"
+uv run ruff format backend/     # auto-format
 ```
 Catches: unused imports, bare `== True` comparisons, style issues, modern Python syntax.
 **FastAPI route handlers and Pydantic fields will NOT appear** — ruff understands decorators.
 
 ### Vulture (dead code)
 ```bash
-uv run vulture newpoc/backend/ --min-confidence 80
+uv run vulture backend/ --min-confidence 80
 ```
 Run at 80% confidence — 60% produces too many false positives from FastAPI/SQLAlchemy.
 **Expected false positives at 60%:** FastAPI route functions (framework registers them via decorator), SQLAlchemy `relationship()` definitions (ORM wires them at query time), Pydantic model fields (used by serialization). These are NOT dead code.
@@ -422,13 +422,13 @@ Run at 80% confidence — 60% produces too many false positives from FastAPI/SQL
 
 ### TypeScript (frontend)
 ```bash
-cd newpoc/lab && npx tsc --noEmit     # must return 0 errors before any commit
+cd frontend && npx tsc --noEmit     # must return 0 errors before any commit
 ```
 
 ### Checklist before committing
-1. `uv run ruff check newpoc/backend/` → clean
-2. `uv run vulture newpoc/backend/ --min-confidence 80` → clean
-3. `cd newpoc/lab && npx tsc --noEmit` → 0 errors
+1. `uv run ruff check backend/` → clean
+2. `uv run vulture backend/ --min-confidence 80` → clean
+3. `cd frontend && npx tsc --noEmit` → 0 errors
 
 ---
 
