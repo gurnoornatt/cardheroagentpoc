@@ -400,6 +400,111 @@ See `.env.example` for the full list. Key vars:
 
 ---
 
+## AI Development Workflow — Claude Maxing
+
+This repo is built with a full Superpowers + gstack agent stack. Every feature follows this exact sprint order:
+
+```
+Think (/office-hours) → Plan (/autoplan) → Build (Superpowers TDD) → Review (/review) → Test (/qa) → Ship (/ship) → Reflect (/retro)
+```
+
+Never skip steps. Each step exists because a previous incident showed what breaks without it.
+
+---
+
+### Step 1 — Think: `/office-hours`
+YC-style office hours to pressure-test the idea before writing any code. Surfaces scope creep, bad assumptions, and missing constraints. Run this before any non-trivial feature.
+
+---
+
+### Step 2 — Plan: `/autoplan`
+Triggers the full `superpowers:brainstorming` → `superpowers:writing-plans` pipeline:
+
+1. **Brainstorming** — collaborative design dialogue, proposes 2–3 approaches with trade-offs, writes a design spec to `docs/superpowers/specs/YYYY-MM-DD-<feature>.md`
+2. **Writing Plans** — converts approved spec into a bite-sized TDD task list saved to `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`. Every task has: exact file paths, failing test first, minimal implementation, exact commands with expected output, commit step.
+
+Design specs and plans live in `docs/superpowers/` — read them before touching anything they describe.
+
+---
+
+### Step 3 — Build: Superpowers TDD
+
+**`superpowers:test-driven-development`** — red-green-refactor on every task. Write the failing test first, run it to confirm it fails, implement the minimum code to pass, commit. Never implement without a failing test.
+
+**`superpowers:subagent-driven-development`** — for large multi-task plans, dispatches a fresh subagent per task. Keeps main context clean, enables review between tasks.
+
+**`superpowers:systematic-debugging`** — for any bug or test failure. Never guess. Trace: reproduce → isolate → root cause → fix → verify. Used when tests fail after refactors.
+
+**Known gotcha in this repo:** `test_push_notifications.py` uses the real SQLAlchemy `engine` directly (not the in-memory test override from conftest). Running `uv run pytest tests/` wipes the seeded DB. Always reseed after: `uv run python3 -m backend.seed`.
+
+---
+
+### Step 4 — Review: `/review`
+
+**`superpowers:requesting-code-review`** (via gstack `/review`) — runs before any push. Caught 2 production bugs in this repo that tests missed:
+
+| Bug | How /review caught it |
+|-----|----------------------|
+| Double `mailto:` in VAPID claim (`mailto:mailto:email`) | Static analysis of the `vapid_claims` dict construction |
+| SW not active before `pushManager.subscribe()` | Spotted missing `await navigator.serviceWorker.ready` — would have silently failed on first visit in production |
+
+These would have shipped undetected. Run `/review` before every push.
+
+---
+
+### Step 5 — Test: `/qa`
+
+**gstack `/qa`** — browser-driven E2E testing against localhost. Opens the frontend, navigates every page, fires API calls, checks for console errors and broken UI. Run against `http://localhost:5173` after `/review` passes.
+
+**`/qa-only`** — same as `/qa` but report-only, no fixes. Good for a quick sanity check.
+
+---
+
+### Step 6 — Ship: `/ship`
+
+Merges PR, runs final checks, deploys. Use `/land-and-deploy` after the PR is approved to merge + trigger Railway/Vercel deploys in one command.
+
+**Deployment checklist for this repo:**
+- Vercel root directory must be `frontend` (not `newpoc/lab`) — was wrong once, fixed via Vercel API
+- Railway start command: `uvicorn backend.main:app --host 0.0.0.0 --port 8001`
+- `.env` must be at repo root — `backend/config.py` resolves `Path(__file__).parent.parent / ".env"`
+
+---
+
+### Step 7 — Reflect: `/retro`
+
+Weekly retrospective. Reads git log + test history, surfaces what broke and why, updates this CLAUDE.md with new learnings.
+
+---
+
+### Other Skills Worth Knowing
+
+| Skill / Command | When to use |
+|----------------|-------------|
+| `/investigate` | Root cause analysis for production bugs — reads logs, traces the call stack, never guesses |
+| `/cso` | Security audit before any feature touching auth, payments, or external APIs. Runs OWASP Top 10 + STRIDE |
+| `/careful` | Wraps destructive commands with a confirmation gate. Use before `git reset --hard`, `rm -rf`, DB migrations |
+| `/freeze` | Locks a directory from edits. Use during a deploy freeze or when protecting a known-good module |
+| `/benchmark` | Performance regression detection. Use when touching the Watchman scraper or `/evaluate` hot path |
+| `/document-release` | Post-ship docs update — reads the diff, updates CLAUDE.md and README automatically |
+| `superpowers:verification-before-completion` | Final checklist before claiming a task done. Runs all quality gates and confirms no regressions |
+
+---
+
+### Lessons Learned in This Repo
+
+1. **Import order in pytest matters.** `conftest.py` imports `backend.main` at module level, which bakes module-level constants (VAPID keys, budget limits) from `os.environ` at collection time — before any test file can set `os.environ.setdefault`. Fix: set test env defaults in `conftest.py` before the import.
+
+2. **gitignored files don't follow `git mv`.** The SQLite DB and `node_modules` stay on disk when you move directories with git. This caused `backend/backend/` nesting during the repo restructure because git saw the gitignored `db/` directory and treated `backend/` as an existing target. Always check for gitignored remnants after `git mv`.
+
+3. **`.env` location is a restructure landmine.** After moving `newpoc/backend/` → `backend/`, `config.py` correctly resolves to `Path(__file__).parent.parent / ".env"` = repo root. But the real credentials were still at `newpoc/.env`. Always copy the real `.env` to the new root immediately after a restructure — don't rely on the old path.
+
+4. **gstack `/review` before pushing is non-negotiable.** It caught bugs in the push notification feature that 9 passing tests didn't catch. Tests verify code paths; `/review` reads code like a senior engineer.
+
+5. **Vercel root directory is a project setting, not a file.** Changing `frontend/vercel.json` doesn't change where Vercel looks for the frontend. The root directory is set in the Vercel project dashboard (or via API: `PATCH /v9/projects/:id { rootDirectory: "frontend" }`). Update it explicitly when restructuring.
+
+---
+
 ## Code Quality — Run Before Every Commit
 
 Both tools are installed as dev deps (`uv add ruff vulture --dev`).
