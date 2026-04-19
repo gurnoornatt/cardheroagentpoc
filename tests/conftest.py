@@ -5,8 +5,15 @@ Uses an in-memory SQLite database per test function so tests are fully isolated
 and don't touch the real cardhero.db.
 """
 
+import os
 import pytest
 from fastapi.testclient import TestClient
+
+# Set VAPID test defaults before importing backend.main so the module-level
+# constants are populated when the module is first loaded by the test runner.
+os.environ.setdefault("VAPID_PRIVATE_KEY", "fake-private-key")
+os.environ.setdefault("VAPID_PUBLIC_KEY", "BFake_public_key_base64url_padded_to_65_bytes_AAAA")
+os.environ.setdefault("VAPID_CLAIMS_EMAIL", "test@example.com")
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
